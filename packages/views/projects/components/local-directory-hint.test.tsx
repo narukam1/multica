@@ -149,6 +149,28 @@ describe("LocalDirectoryHint", () => {
     expect(screen.getByText(/Users\/foo\/work/)).toBeInTheDocument();
   });
 
+  it("describes workspace_layout as a composite tree, never in-place", async () => {
+    mockDaemonStatus.daemonId = "daemon-A";
+    mockDaemonStatus.running = true;
+    mockListResources.mockResolvedValue({
+      resources: [
+        makeLocalDirectoryResource({
+          daemon_id: "daemon-A",
+          local_path: "/Users/foo/srm-all",
+          label: "srm-all",
+          execution_mode: "workspace_layout",
+        }),
+      ],
+      total: 1,
+    });
+    renderHint("proj-1");
+    await waitFor(() => {
+      expect(screen.getByText(/composite tree of/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/in-place/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/multica\/….*branch/i)).toBeInTheDocument();
+  });
+
   it("describes an explicit in_place resource as in-place", async () => {
     mockDaemonStatus.daemonId = "daemon-A";
     mockDaemonStatus.running = true;

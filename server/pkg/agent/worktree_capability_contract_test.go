@@ -28,3 +28,19 @@ func TestWorktreeCapabilityTokenMatchesFrontend(t *testing.T) {
 			got, protocol.DaemonCapabilityLocalWorktreeV1)
 	}
 }
+
+func TestWorkspaceLayoutCapabilityTokenMatchesFrontend(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "packages", "core", "runtimes", "cli-version.ts")
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	match := regexp.MustCompile(`LOCAL_WORKSPACE_LAYOUT_CAPABILITY\s*=\s*"([^"]+)"`).FindSubmatch(src)
+	if match == nil {
+		t.Fatal("LOCAL_WORKSPACE_LAYOUT_CAPABILITY not found in packages/core/runtimes/cli-version.ts")
+	}
+	if got := string(match[1]); got != protocol.DaemonCapabilityLocalWorkspaceLayoutV1 {
+		t.Errorf("frontend looks for %q but the daemon advertises %q",
+			got, protocol.DaemonCapabilityLocalWorkspaceLayoutV1)
+	}
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { GitBranch, Pencil, TriangleAlert } from "lucide-react";
+import { GitBranch, Layers, Pencil, TriangleAlert } from "lucide-react";
 import type { LocalDirectoryExecutionMode } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -31,7 +31,8 @@ import { useT } from "../../i18n/use-t";
  *
  * `undefined` means available.
  */
-export type WorktreeUnavailableReason = "not_git" | "server_outdated";
+export type ModeUnavailableReason = "not_git" | "server_outdated";
+export type WorktreeUnavailableReason = ModeUnavailableReason;
 
 interface LocalDirectoryModeDialogProps {
   open: boolean;
@@ -41,7 +42,9 @@ interface LocalDirectoryModeDialogProps {
   /** Mode to preselect — the current mode when editing, in_place when adding. */
   value: LocalDirectoryExecutionMode;
   /** Set when worktree cannot be chosen; the option renders disabled with a reason. */
-  unavailableReason?: WorktreeUnavailableReason;
+  unavailableReason?: ModeUnavailableReason;
+  /** Set when workspace_layout cannot be chosen. */
+  layoutUnavailableReason?: ModeUnavailableReason;
   /** Server-side rejection to show inline (e.g. a 422 that only the API can detect). */
   errorMessage?: string;
   saving?: boolean;
@@ -53,11 +56,12 @@ interface LocalDirectoryModeDialogProps {
 /**
  * Mode picker for a local_directory resource.
  *
- * Deliberately does NOT surface the raw `in_place` / `worktree` identifiers as
- * the primary label. The choice a user is actually making is about how they get
- * their results back — edits appearing in their working copy versus a branch
- * they review — so the options lead with that, and the identifier is only a
- * secondary hint for anyone matching this against the CLI or the docs.
+ * Deliberately does NOT surface the raw `in_place` / `worktree` /
+ * `workspace_layout` identifiers as the primary label. The choice a user is
+ * actually making is about how they get their results back — edits appearing
+ * in their working copy versus a branch they review — so the options lead
+ * with that, and the identifier is only a secondary hint for anyone matching
+ * this against the CLI or the docs.
  */
 export function LocalDirectoryModeDialog({
   open,
@@ -65,6 +69,7 @@ export function LocalDirectoryModeDialog({
   path,
   value,
   unavailableReason,
+  layoutUnavailableReason,
   errorMessage,
   saving = false,
   confirmLabel,
@@ -97,6 +102,7 @@ export function LocalDirectoryModeDialog({
           value={selected}
           onChange={setSelected}
           unavailableReason={unavailableReason}
+          layoutUnavailableReason={layoutUnavailableReason}
         />
 
         {errorMessage && (
@@ -126,11 +132,12 @@ export function LocalDirectoryModeDialog({
 interface LocalDirectoryModeOptionsProps {
   value: LocalDirectoryExecutionMode;
   onChange: (mode: LocalDirectoryExecutionMode) => void;
-  unavailableReason?: WorktreeUnavailableReason;
+  unavailableReason?: ModeUnavailableReason;
+  layoutUnavailableReason?: ModeUnavailableReason;
 }
 
 /**
- * The two-option choice itself, without any surrounding chrome.
+ * The mode choice itself, without any surrounding chrome.
  *
  * Shared so the dialog (editing an existing resource) and the compact picker in
  * the create-project modal offer literally the same options, copy and blocked
@@ -140,9 +147,11 @@ export function LocalDirectoryModeOptions({
   value,
   onChange,
   unavailableReason,
+  layoutUnavailableReason,
 }: LocalDirectoryModeOptionsProps) {
   const { t } = useT("projects");
   const worktreeDisabled = unavailableReason !== undefined;
+  const layoutDisabled = layoutUnavailableReason !== undefined;
 
   return (
     <div className="flex flex-col gap-2">
@@ -169,6 +178,22 @@ export function LocalDirectoryModeOptions({
               : undefined
         }
         onSelect={() => onChange("worktree")}
+      />
+      <ModeOption
+        icon={<Layers className="size-4" />}
+        title={t(($) => $.resources.mode_workspace_layout_title)}
+        description={t(($) => $.resources.mode_workspace_layout_description)}
+        identifier="workspace_layout"
+        selected={value === "workspace_layout"}
+        disabled={layoutDisabled}
+        disabledReason={
+          layoutUnavailableReason === "not_git"
+            ? t(($) => $.resources.mode_workspace_layout_needs_git)
+            : layoutUnavailableReason === "server_outdated"
+              ? t(($) => $.resources.mode_workspace_layout_needs_server_upgrade)
+              : undefined
+        }
+        onSelect={() => onChange("workspace_layout")}
       />
     </div>
   );

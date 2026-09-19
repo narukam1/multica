@@ -15,6 +15,7 @@ function renderDialog(
   overrides: {
     value?: LocalDirectoryExecutionMode;
     unavailableReason?: WorktreeUnavailableReason;
+    layoutUnavailableReason?: WorktreeUnavailableReason;
     errorMessage?: string;
     onConfirm?: (mode: LocalDirectoryExecutionMode) => void;
   } = {},
@@ -28,6 +29,7 @@ function renderDialog(
         path="/Users/dev/work/game-client"
         value={overrides.value ?? "in_place"}
         unavailableReason={overrides.unavailableReason}
+        layoutUnavailableReason={overrides.layoutUnavailableReason}
         errorMessage={overrides.errorMessage}
         confirmLabel="Save"
         onConfirm={onConfirm}
@@ -39,6 +41,10 @@ function renderDialog(
 
 function worktreeOption(): HTMLElement {
   return screen.getAllByRole("radio")[1] as HTMLElement;
+}
+
+function layoutOption(): HTMLElement {
+  return screen.getAllByRole("radio")[2] as HTMLElement;
 }
 
 describe("LocalDirectoryModeDialog", () => {
@@ -105,6 +111,32 @@ describe("LocalDirectoryModeDialog", () => {
         "the Multica runtime on that machine does not support it. Update the Multica app on that machine",
     });
     expect(screen.getByText(/does not support it/i)).toBeTruthy();
+  });
+
+  it("confirms composite-tree mode when picked", () => {
+    const onConfirm = vi.fn();
+    renderDialog({ value: "in_place", onConfirm });
+
+    fireEvent.click(layoutOption());
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onConfirm).toHaveBeenCalledWith("workspace_layout");
+  });
+
+  it("disables composite-tree mode when the server cannot honour it", () => {
+    const onConfirm = vi.fn();
+    renderDialog({
+      layoutUnavailableReason: "server_outdated",
+      onConfirm,
+    });
+
+    const option = layoutOption();
+    expect(option.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/too old to isolate composite trees/i)).toBeTruthy();
+
+    fireEvent.click(option);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onConfirm).toHaveBeenCalledWith("in_place");
   });
 
   it("leaves parallel mode selectable for a git folder, whatever the runtime says", () => {

@@ -48,7 +48,7 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 	}}
 
 	t.Run("blocks a runtime that does not advertise the capability", func(t *testing.T) {
-		reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, "0.4.10"), false)
+		reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, "0.4.10"), false, false)
 		if reason == "" {
 			t.Fatal("an outdated runtime was allowed to claim a worktree task")
 		}
@@ -60,13 +60,13 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 	t.Run("blocks a runtime that advertises nothing at all", func(t *testing.T) {
 		// Fail closed: "no version" is what a daemon far older than the field
 		// looks like, which is exactly the dangerous case.
-		if worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, ""), false) == "" {
+		if worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, ""), false, false) == "" {
 			t.Error("a runtime advertising nothing was allowed to claim")
 		}
 	})
 
 	t.Run("allows a runtime that advertises the capability", func(t *testing.T) {
-		if reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, "9.9.9"), true); reason != "" {
+		if reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion(daemon, "9.9.9"), true, false); reason != "" {
 			t.Errorf("a capable runtime was blocked: %q", reason)
 		}
 	})
@@ -77,7 +77,7 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 				ID: "r1", ResourceType: "local_directory",
 				ResourceRef: localDirRef(t, "/Users/dev/game", daemon, mode),
 			}}
-			if reason := worktreeClaimBlockReason(res, runtimeWithVersion(daemon, "0.1.0"), false); reason != "" {
+			if reason := worktreeClaimBlockReason(res, runtimeWithVersion(daemon, "0.1.0"), false, false); reason != "" {
 				t.Errorf("mode %q blocked a daemon that can run it fine: %q", mode, reason)
 			}
 		}
@@ -90,7 +90,7 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 			ID: "r1", ResourceType: "local_directory",
 			ResourceRef: localDirRef(t, "/Users/dev/game", "daemon-b", "worktree"),
 		}}
-		if reason := worktreeClaimBlockReason(other, runtimeWithVersion(daemon, "0.1.0"), false); reason != "" {
+		if reason := worktreeClaimBlockReason(other, runtimeWithVersion(daemon, "0.1.0"), false, false); reason != "" {
 			t.Errorf("another machine's resource blocked this claim: %q", reason)
 		}
 	})
@@ -100,14 +100,38 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 			ID: "r1", ResourceType: "github_repo",
 			ResourceRef: json.RawMessage(`{"url":"https://github.com/a/b"}`),
 		}}
-		if reason := worktreeClaimBlockReason(repo, runtimeWithVersion(daemon, "0.1.0"), false); reason != "" {
+		if reason := worktreeClaimBlockReason(repo, runtimeWithVersion(daemon, "0.1.0"), false, false); reason != "" {
 			t.Errorf("github_repo resource blocked a claim: %q", reason)
 		}
 	})
 
 	t.Run("ignores a runtime with no daemon id", func(t *testing.T) {
-		if reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion("", "0.1.0"), false); reason != "" {
+		if reason := worktreeClaimBlockReason(worktreeRes, runtimeWithVersion("", "0.1.0"), false, false); reason != "" {
 			t.Errorf("cloud runtime blocked: %q", reason)
+		}
+	})
+
+	t.Run("blocks workspace_layout without the layout capability", func(t *testing.T) {
+		layoutRes := []ProjectResourceData{{
+			ID: "r1", ResourceType: "local_directory",
+			ResourceRef: localDirRef(t, "/Users/dev/srm-all", daemon, "workspace_layout"),
+		}}
+		reason := worktreeClaimBlockReason(layoutRes, runtimeWithVersion(daemon, "9.9.9"), true, false)
+		if reason == "" {
+			t.Fatal("a worktree-capable runtime was allowed to claim a workspace_layout task")
+		}
+		if !strings.Contains(reason, "workspace layout") {
+			t.Errorf("reason should name workspace layout, got: %q", reason)
+		}
+	})
+
+	t.Run("allows workspace_layout when the layout capability is advertised", func(t *testing.T) {
+		layoutRes := []ProjectResourceData{{
+			ID: "r1", ResourceType: "local_directory",
+			ResourceRef: localDirRef(t, "/Users/dev/srm-all", daemon, "workspace_layout"),
+		}}
+		if reason := worktreeClaimBlockReason(layoutRes, runtimeWithVersion(daemon, "9.9.9"), false, true); reason != "" {
+			t.Errorf("a layout-capable runtime was blocked: %q", reason)
 		}
 	})
 
@@ -116,7 +140,7 @@ func TestWorktreeClaimBlockReason(t *testing.T) {
 			ID: "r1", ResourceType: "local_directory",
 			ResourceRef: json.RawMessage(`{"local_path": 42}`),
 		}}
-		if reason := worktreeClaimBlockReason(bad, runtimeWithVersion(daemon, "0.1.0"), false); reason != "" {
+		if reason := worktreeClaimBlockReason(bad, runtimeWithVersion(daemon, "0.1.0"), false, false); reason != "" {
 			t.Errorf("malformed ref produced a block: %q", reason)
 		}
 	})
@@ -853,7 +877,7 @@ func TestWorktreeClaimGateIgnoresVersionStrings(t *testing.T) {
 		"9.9.9",                 // far above it
 		"",                      // none reported
 	} {
-		if worktreeClaimBlockReason(res, runtimeWithVersion(daemon, version), false) == "" {
+		if worktreeClaimBlockReason(res, runtimeWithVersion(daemon, version), false, false) == "" {
 			t.Errorf("version %q was allowed to claim without advertising the capability", version)
 		}
 	}
@@ -861,7 +885,7 @@ func TestWorktreeClaimGateIgnoresVersionStrings(t *testing.T) {
 	// And the converse: a capable daemon runs regardless of how old its version
 	// string looks, so the gate can never strand a runtime that actually works.
 	for _, version := range []string{"v0.4.21-24-gcd3c0bb89", "0.0.1", ""} {
-		if reason := worktreeClaimBlockReason(res, runtimeWithVersion(daemon, version), true); reason != "" {
+		if reason := worktreeClaimBlockReason(res, runtimeWithVersion(daemon, version), true, false); reason != "" {
 			t.Errorf("version %q blocked a capable runtime: %q", version, reason)
 		}
 	}

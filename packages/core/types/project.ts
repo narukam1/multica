@@ -86,11 +86,15 @@ export interface GithubRepoResourceRef {
  *   `agent/<agent>/<task>`. Continuation is decided by an ownership record in
  *   the repo, not by the branch name, so a same-named branch the user made is
  *   never adopted.
+ * - `workspace_layout`: for a composite checkout (root git + nested independent
+ *   repos + shared junctions). Each run materialises its own tree from
+ *   `.index/workspace-layout.yaml` and delivers `multica/<issue>` branches
+ *   without editing the bound reference path.
  *
  * Absent means `in_place`: resources created before the mode existed keep their
  * original behavior, so this is optional rather than defaulted on the server.
  */
-export type LocalDirectoryExecutionMode = "in_place" | "worktree";
+export type LocalDirectoryExecutionMode = "in_place" | "worktree" | "workspace_layout";
 
 export interface LocalDirectoryResourceRef {
   local_path: string;

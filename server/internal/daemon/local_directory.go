@@ -24,8 +24,9 @@ const localDirectoryResourceType = "local_directory"
 // value means in_place, so resources created before worktree mode existed keep
 // their original behavior.
 const (
-	localDirectoryModeInPlace  = "in_place"
-	localDirectoryModeWorktree = "worktree"
+	localDirectoryModeInPlace          = "in_place"
+	localDirectoryModeWorktree         = "worktree"
+	localDirectoryModeWorkspaceLayout  = "workspace_layout"
 )
 
 // localDirectoryRef mirrors the server-side ref shape for local_directory
@@ -57,6 +58,19 @@ type localDirectoryAssignment struct {
 // on this rather than on "is there a local_directory assignment at all".
 func (a *localDirectoryAssignment) UsesWorktree() bool {
 	return a != nil && strings.TrimSpace(a.Ref.ExecutionMode) == localDirectoryModeWorktree
+}
+
+// UsesWorkspaceLayout reports whether this assignment materialises a composite
+// tree (nested git worktrees + junctions) instead of using the reference path
+// as cwd. Like worktree mode, it skips the per-path mutex.
+func (a *localDirectoryAssignment) UsesWorkspaceLayout() bool {
+	return a != nil && strings.TrimSpace(a.Ref.ExecutionMode) == localDirectoryModeWorkspaceLayout
+}
+
+// IsolatesWorkingCopy is true when the task must not edit the bound
+// local_path in place. Both worktree and workspace_layout qualify.
+func (a *localDirectoryAssignment) IsolatesWorkingCopy() bool {
+	return a.UsesWorktree() || a.UsesWorkspaceLayout()
 }
 
 // DisplayName is the human-facing name for this directory, safe to render in
@@ -93,14 +107,14 @@ func (a *localDirectoryAssignment) ValidateExecutionMode() error {
 		return nil
 	}
 	switch strings.TrimSpace(a.Ref.ExecutionMode) {
-	case "", localDirectoryModeInPlace, localDirectoryModeWorktree:
+	case "", localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeWorkspaceLayout:
 		return nil
 	default:
 		return fmt.Errorf(
 			"local_directory: this daemon does not support execution_mode %q for %q "+
-				"(update the daemon, or set the resource's execution mode to %q or %q); "+
+				"(update the daemon, or set the resource's execution mode to %q, %q, or %q); "+
 				"refusing to run in place, since that would modify a directory the resource asked to isolate",
-			a.Ref.ExecutionMode, a.AbsPath, localDirectoryModeInPlace, localDirectoryModeWorktree)
+			a.Ref.ExecutionMode, a.AbsPath, localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeWorkspaceLayout)
 	}
 }
 

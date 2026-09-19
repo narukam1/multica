@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { CalendarClock, CalendarDays, ChevronRight, FolderOpen, GitBranch, Maximize2, Minimize2, MoreHorizontal, Pencil, Search, X as XIcon, UserMinus } from "lucide-react";
+import { CalendarClock, CalendarDays, ChevronRight, FolderOpen, GitBranch, Layers, Maximize2, Minimize2, MoreHorizontal, Pencil, Search, X as XIcon, UserMinus } from "lucide-react";
 
 /**
  * GitHub mark — lucide-react v1 dropped brand icons, so we inline the
@@ -221,10 +221,19 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   // save gate drop execution_mode and answer 201, so "the backend will check"
   // is only true once the backend says it checks (#7113).
   const serverValidatesWorktree = useConfigStore((state) => state.localWorktreeSupported);
+  const serverValidatesLayout = useConfigStore(
+    (state) => state.localWorkspaceLayoutSupported,
+  );
   const worktreeUnavailableReason =
     localIsGitRepo === false
       ? ("not_git" as const)
       : !serverValidatesWorktree
+        ? ("server_outdated" as const)
+        : undefined;
+  const layoutUnavailableReason =
+    localIsGitRepo === false
+      ? ("not_git" as const)
+      : !serverValidatesLayout
         ? ("server_outdated" as const)
         : undefined;
   // Preselection, not a default behavior change: when the folder is a git repo
@@ -245,10 +254,13 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   // Never submit a mode the picker would have blocked — the folder can change
   // after a mode was chosen (pick a git repo, choose worktree, then pick a
   // plain folder), and the stale choice would fail at task time.
+  const chosenLocalMode = localMode ?? preselectedLocalMode;
   const effectiveLocalMode: LocalDirectoryExecutionMode =
-    worktreeUnavailableReason !== undefined
+    chosenLocalMode === "worktree" && worktreeUnavailableReason !== undefined
       ? "in_place"
-      : (localMode ?? preselectedLocalMode);
+      : chosenLocalMode === "workspace_layout" && layoutUnavailableReason !== undefined
+        ? "in_place"
+        : chosenLocalMode;
 
   const handleSourceModeChange = (mode: "repos" | "local") => {
     setSourceMode(mode);
@@ -880,6 +892,8 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                               >
                                 {effectiveLocalMode === "worktree" ? (
                                   <GitBranch className="size-3 shrink-0" />
+                                ) : effectiveLocalMode === "workspace_layout" ? (
+                                  <Layers className="size-3 shrink-0" />
                                 ) : (
                                   <Pencil className="size-3 shrink-0" />
                                 )}
@@ -890,7 +904,9 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                                 <span className="truncate">
                                   {effectiveLocalMode === "worktree"
                                     ? tProjects(($) => $.resources.mode_badge_worktree)
-                                    : tProjects(($) => $.resources.mode_badge_in_place)}
+                                    : effectiveLocalMode === "workspace_layout"
+                                      ? tProjects(($) => $.resources.mode_badge_workspace_layout)
+                                      : tProjects(($) => $.resources.mode_badge_in_place)}
                                 </span>
                               </Button>
                             }
@@ -903,6 +919,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                                 setLocalModeOpen(false);
                               }}
                               unavailableReason={worktreeUnavailableReason}
+                              layoutUnavailableReason={layoutUnavailableReason}
                             />
                           </PopoverContent>
                         </Popover>

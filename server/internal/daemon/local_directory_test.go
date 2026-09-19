@@ -861,6 +861,7 @@ func TestUsesWorktreeDefaultsToExclusive(t *testing.T) {
 		{"", false},
 		{localDirectoryModeInPlace, false},
 		{localDirectoryModeWorktree, true},
+		{localDirectoryModeWorkspaceLayout, false},
 		{" worktree ", true},
 		{"snapshot", false},
 		{"WORKTREE", false},
@@ -874,6 +875,25 @@ func TestUsesWorktreeDefaultsToExclusive(t *testing.T) {
 	var nilAssignment *localDirectoryAssignment
 	if nilAssignment.UsesWorktree() {
 		t.Error("UsesWorktree() on nil assignment = true, want false")
+	}
+}
+
+func TestIsolatesWorkingCopy(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		mode string
+		want bool
+	}{
+		{"", false},
+		{localDirectoryModeInPlace, false},
+		{localDirectoryModeWorktree, true},
+		{localDirectoryModeWorkspaceLayout, true},
+	}
+	for _, tc := range cases {
+		a := &localDirectoryAssignment{Ref: localDirectoryRef{ExecutionMode: tc.mode}}
+		if got := a.IsolatesWorkingCopy(); got != tc.want {
+			t.Errorf("IsolatesWorkingCopy(%q) = %v, want %v", tc.mode, got, tc.want)
+		}
 	}
 }
 
@@ -956,7 +976,7 @@ func TestAcquireLocalDirectoryLockRejectsUnknownExecutionMode(t *testing.T) {
 func TestValidateExecutionModeAcceptsKnownModes(t *testing.T) {
 	t.Parallel()
 
-	for _, mode := range []string{"", localDirectoryModeInPlace, localDirectoryModeWorktree, "  worktree  "} {
+	for _, mode := range []string{"", localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeWorkspaceLayout, "  worktree  "} {
 		a := &localDirectoryAssignment{Ref: localDirectoryRef{ExecutionMode: mode}}
 		if err := a.ValidateExecutionMode(); err != nil {
 			t.Errorf("ValidateExecutionMode(%q) = %v, want nil", mode, err)

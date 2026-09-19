@@ -126,6 +126,9 @@ function meetsMinCliVersion(detected: string | undefined | null, minimum: string
  */
 export const LOCAL_WORKTREE_CAPABILITY = "local-worktree-v1";
 
+/** Mirrors `DaemonCapabilityLocalWorkspaceLayoutV1`. */
+export const LOCAL_WORKSPACE_LAYOUT_CAPABILITY = "local-workspace-layout-v1";
+
 /** Minimal runtime shape this module needs; keeps callers from importing types. */
 type RuntimeCapabilityRow = {
   daemon_id?: string | null;
@@ -160,6 +163,22 @@ export function runtimeAdvertisesLocalWorktree(
   runtimes: RuntimeCapabilityRow[],
   daemonId: string | null | undefined,
 ): boolean {
+  return runtimeAdvertisesCapability(runtimes, daemonId, LOCAL_WORKTREE_CAPABILITY);
+}
+
+/** Same newest-row rule as worktree, for local-workspace-layout-v1. */
+export function runtimeAdvertisesLocalWorkspaceLayout(
+  runtimes: RuntimeCapabilityRow[],
+  daemonId: string | null | undefined,
+): boolean {
+  return runtimeAdvertisesCapability(runtimes, daemonId, LOCAL_WORKSPACE_LAYOUT_CAPABILITY);
+}
+
+function runtimeAdvertisesCapability(
+  runtimes: RuntimeCapabilityRow[],
+  daemonId: string | null | undefined,
+  capability: string,
+): boolean {
   if (!daemonId) return false;
   let newest: RuntimeCapabilityRow | undefined;
   for (const rt of runtimes) {
@@ -176,5 +195,5 @@ export function runtimeAdvertisesLocalWorktree(
   const metadata = newest?.metadata;
   if (!metadata || typeof metadata !== "object") return false;
   const caps = (metadata as { capabilities?: unknown }).capabilities;
-  return Array.isArray(caps) && caps.includes(LOCAL_WORKTREE_CAPABILITY);
+  return Array.isArray(caps) && caps.includes(capability);
 }

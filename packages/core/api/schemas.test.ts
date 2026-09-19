@@ -1237,6 +1237,19 @@ describe("AppConfigSchema comment_delete_keep_replies_supported drift", () => {
   });
 });
 
+describe("AppConfigSchema local_workspace_layout_supported drift", () => {
+  it("defaults to false when the server predates the signal", () => {
+    expect(AppConfigSchema.parse({}).local_workspace_layout_supported).toBe(false);
+  });
+
+  it("carries a genuine true through", () => {
+    expect(
+      AppConfigSchema.parse({ local_workspace_layout_supported: true })
+        .local_workspace_layout_supported,
+    ).toBe(true);
+  });
+});
+
 describe("AppConfigSchema local_worktree_supported drift", () => {
   it("defaults to false when the server predates the signal", () => {
     const parsed = AppConfigSchema.parse({ cdn_domain: "cdn.example.com" });

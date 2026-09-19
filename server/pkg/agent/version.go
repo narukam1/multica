@@ -67,6 +67,11 @@ const MinQuickCreateFieldsCLIVersion = "0.4.3"
 // through the floor and ran two tasks in the user's own directory.
 const MinLocalWorktreeCLIVersion = "0.4.24"
 
+// MinLocalWorkspaceLayoutCLIVersion is the display floor for
+// execution_mode=workspace_layout. Gates use
+// protocol.DaemonCapabilityLocalWorkspaceLayoutV1, not this string.
+const MinLocalWorkspaceLayoutCLIVersion = "0.5.1"
+
 // Errors returned by CheckMinCLIVersion. Callers branch on these to surface
 // "needs upgrade" vs "version not reported" with the right user message.
 var (

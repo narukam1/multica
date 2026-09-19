@@ -71,6 +71,12 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 等待不会修改目录。等待中的运行可以取消，否则会一直等到目录可用。
 
+### `workspace_layout` —— “合成树”
+
+给「根仓 + 嵌套独立 Git + 树外共享目录」的聚合工作区用。运行时读取参考树里的 `.index/workspace-layout.yaml`，在本次 Run 的工作区里对各独立仓 `git worktree add`，把 `standard` / `.codegraph` 挂回参考树（Windows 用 `mklink /J`，Linux 用目录符号链接；YAML 里的 `junction` 是意图，不是操作系统命令）。**不会**只 worktree 根仓，也**不会**改参考树。成果是各子仓上的 `multica/<issue>` 分支；工作副本可回收。卸载只对挂载点做 `rmdir` / `unlink`，禁止顺着联接递归删除。
+
+该模式需要运行时声明 `local-workspace-layout-v1`。旧 Daemon 保存资源或领取任务会被拒绝，而不会在参考树上原地执行。
+
 ### `worktree` —— “并行”
 
 每次运行拿到你仓库的一个独立 [git worktree](https://git-scm.com/docs/git-worktree)，建在运行时自己的工作区目录里。**同一目录上的运行并发执行，谁都不用排队**，并且都不会写你的工作副本。

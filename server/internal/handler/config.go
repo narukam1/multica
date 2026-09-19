@@ -75,6 +75,14 @@ type AppConfig struct {
 	// them, and only one of the two guesses is safe.
 	LocalWorktreeSupported bool `json:"local_worktree_supported"`
 
+	// LocalWorkspaceLayoutSupported tells clients this server understands
+	// execution_mode=workspace_layout and enforces the composite-tree
+	// capability gate when a resource is saved. Absent on every server that
+	// predates the mode — including ones that already declare
+	// local_worktree_supported — so clients must fail closed and hide the
+	// option rather than offer a mode the save would 422, or worse drop.
+	LocalWorkspaceLayoutSupported bool `json:"local_workspace_layout_supported"`
+
 	// AgentConversationStartersSupported tells independently deployed clients
 	// that agent create/update persists conversation_starters. Older handlers
 	// ignored the unknown JSON field and still returned success, so clients
@@ -105,6 +113,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		// A property of this build, not of the deployment: if this code is
 		// running, the save gate is running with it.
 		LocalWorktreeSupported:             true,
+		LocalWorkspaceLayoutSupported:      true,
 		AgentConversationStartersSupported: true,
 		CommentDeleteKeepRepliesSupported:  true,
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",

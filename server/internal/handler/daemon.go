@@ -3603,6 +3603,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		resp.ProjectResources,
 		runtime,
 		requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorktreeV1),
+		requestHasClientCapability(r, protocol.DaemonCapabilityLocalWorkspaceLayoutV1),
 	); reason != "" {
 		slog.Error("task claim: runtime too old for worktree mode; cancelling rather than running in place",
 			"task_id", uuidToString(task.ID),
@@ -3668,11 +3669,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 // Only resources bound to the claiming runtime's own daemon are considered: a
 // project may carry one local_directory per machine, and another machine's
 // worktree resource says nothing about this one's ability to run the task.
-func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability bool) string {
+func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentRuntime, hasWorktreeCapability, hasLayoutCapability bool) string {
 	if !runtime.DaemonID.Valid || runtime.DaemonID.String == "" {
-		return ""
-	}
-	if hasWorktreeCapability {
 		return ""
 	}
 	for _, res := range resources {
@@ -3683,14 +3681,29 @@ func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentR
 		if err := json.Unmarshal(res.ResourceRef, &ref); err != nil {
 			continue
 		}
-		if ref.ExecutionMode != localDirectoryModeWorktree || ref.DaemonID != runtime.DaemonID.String {
+		if ref.DaemonID != runtime.DaemonID.String {
 			continue
 		}
-		return fmt.Sprintf(
-			"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
-				"Update the Multica app on that machine to the latest version, then re-run this task. "+
-				"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
-			ref.LocalPath)
+		switch ref.ExecutionMode {
+		case localDirectoryModeWorktree:
+			if hasWorktreeCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support parallel (worktree) mode, which %q is set to use. "+
+					"Update the Multica app on that machine to the latest version, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the directory directly, which is what this mode exists to prevent.",
+				ref.LocalPath)
+		case localDirectoryModeWorkspaceLayout:
+			if hasLayoutCapability {
+				continue
+			}
+			return fmt.Sprintf(
+				"This machine's Multica runtime does not support workspace layout mode, which %q is set to use. "+
+					"Update the Multica app on that machine to the latest version, then re-run this task. "+
+					"Refusing to run rather than falling back to editing the reference tree directly.",
+				ref.LocalPath)
+		}
 	}
 	return ""
 }

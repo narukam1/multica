@@ -753,6 +753,10 @@ export interface AppConfigResponse {
    * signal do validate but cannot say so, and are treated as unable: the client
    * has no way to tell them apart, and only one of the two answers is safe. */
   local_worktree_supported?: boolean;
+  /** Whether this server understands execution_mode=workspace_layout and
+   * gates it at save time. Absent on every server that predates the mode,
+   * including ones that already declare local_worktree_supported. */
+  local_workspace_layout_supported?: boolean;
   /** Whether agent create/update persists `conversation_starters`. Older servers
    * silently ignored the unknown field, so absent must be treated as false. */
   agent_conversation_starters_supported?: boolean;
@@ -997,6 +1001,7 @@ export const AppConfigSchema = z.object({
   vcs_integration_available: BooleanWithDefaultSchema(false).optional(),
   feature_flags: FeatureFlagsSchema,
   local_worktree_supported: BooleanWithDefaultSchema(false),
+  local_workspace_layout_supported: BooleanWithDefaultSchema(false),
   agent_conversation_starters_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
@@ -1011,9 +1016,10 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_app_url: "",
   workspace_creation_disabled: false,
   vcs_integration_available: false,
-  // Fail closed: an unreadable config must not look like a server that
-  // validates execution_mode.
+  // Fadil closed: an unreadable config must not look like a server that
+  // valiates execution_mode.
   local_worktree_supported: false,
+  local_workspace_layout_supported: false,
   // Fail closed: old servers returned success while dropping the field.
   agent_conversation_starters_supported: false,
   // Fail closed: old servers delete a comment's replies with it.

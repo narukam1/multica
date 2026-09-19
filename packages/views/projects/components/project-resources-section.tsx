@@ -7,6 +7,7 @@ import {
   FolderGit,
   FolderOpen,
   GitBranch,
+  Layers,
   Pencil,
   Plus,
   Search,
@@ -29,6 +30,7 @@ import type {
 } from "@multica/core/types";
 import {
   runtimeAdvertisesLocalWorktree,
+  runtimeAdvertisesLocalWorkspaceLayout,
   runtimeListOptions,
 } from "@multica/core/runtimes";
 import { useConfigStore } from "@multica/core/config";
@@ -86,7 +88,9 @@ function isLocalDirectoryRef(r: ProjectResource): r is ProjectResource & {
 function executionModeOf(
   ref: LocalDirectoryResourceRef,
 ): LocalDirectoryExecutionMode {
-  return ref.execution_mode === "worktree" ? "worktree" : "in_place";
+  if (ref.execution_mode === "worktree") return "worktree";
+  if (ref.execution_mode === "workspace_layout") return "workspace_layout";
+  return "in_place";
 }
 
 /** Pending mode edit — either for a directory being added, or an existing row. */
@@ -139,6 +143,9 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
   // performs that gate at all. One declared boolean, no inference — servers
   // that predate it drop execution_mode and answer 201.
   const serverValidatesWorktree = useConfigStore((state) => state.localWorktreeSupported);
+  const serverValidatesLayout = useConfigStore(
+    (state) => state.localWorkspaceLayoutSupported,
+  );
   // Keyed on the resource's OWN daemon, not the machine the browser happens to
   // be on: a resource is pinned to one machine, and its mode can legitimately
   // be changed from the web app or from a different device. Using the local
@@ -538,6 +545,10 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
             modeDialog.isGitRepo,
             serverValidatesWorktree,
           )}
+          layoutUnavailableReason={worktreeUnavailableReason(
+            modeDialog.isGitRepo,
+            serverValidatesLayout,
+          )}
           errorMessage={modeError ?? undefined}
           saving={modeSaving}
           confirmLabel={
@@ -775,6 +786,21 @@ function LocalDirectoryRow({
           />
           <TooltipContent side="top">
             {t(($) => $.resources.mode_badge_worktree_tooltip)}
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {mode === "workspace_layout" && !editing && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Badge variant="secondary" className="shrink-0 gap-1 font-normal">
+                <Layers className="size-3" />
+                {t(($) => $.resources.mode_badge_workspace_layout)}
+              </Badge>
+            }
+          />
+          <TooltipContent side="top">
+            {t(($) => $.resources.mode_badge_workspace_layout_tooltip)}
           </TooltipContent>
         </Tooltip>
       )}

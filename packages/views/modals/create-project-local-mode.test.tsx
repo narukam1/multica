@@ -90,9 +90,18 @@ vi.mock("@multica/core/projects", () => ({
 // Whether the connected server validates execution_mode at all. Absent on every
 // release before the worktree save gate.
 let serverValidatesWorktree = true;
+let serverValidatesLayout = false;
 vi.mock("@multica/core/config", () => ({
-  useConfigStore: (selector: (state: { localWorktreeSupported: boolean }) => unknown) =>
-    selector({ localWorktreeSupported: serverValidatesWorktree }),
+  useConfigStore: (
+    selector: (state: {
+      localWorktreeSupported: boolean;
+      localWorkspaceLayoutSupported: boolean;
+    }) => unknown,
+  ) =>
+    selector({
+      localWorktreeSupported: serverValidatesWorktree,
+      localWorkspaceLayoutSupported: serverValidatesLayout,
+    }),
 }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "workspace-1" }));
@@ -181,6 +190,7 @@ describe("CreateProjectModal — local directory execution mode", () => {
     runtimeCliVersion = "9.9.9";
     runtimeWorktreeMetadata = "advertised";
     serverValidatesWorktree = true;
+    serverValidatesLayout = false;
     pickedIsGitRepo = true;
   });
 
@@ -310,6 +320,29 @@ describe("CreateProjectModal — local directory execution mode", () => {
     expect(screen.getByRole("radio", { name: /Run in parallel, isolated/i })).toBeDisabled();
     expect(screen.getByText(/not a git repository/i)).toBeInTheDocument();
   });
+
+  it("offers composite-tree mode when the server declares it", async () => {
+    serverValidatesLayout = true;
+    const user = userEvent.setup();
+    renderWithI18n(<CreateProjectModal onClose={vi.fn()} />);
+
+    await pickLocalDirectory(user);
+
+    const option = screen.getByRole("radio", { name: /Run as a composite tree/i });
+    expect(option).not.toBeDisabled();
+    await user.click(option);
+    expect(screen.getByRole("button", { name: /^Composite$/i })).toBeInTheDocument();
+  });
+
+  it("blocks composite-tree mode against a server that cannot honour it", async () => {
+    const user = userEvent.setup();
+    renderWithI18n(<CreateProjectModal onClose={vi.fn()} />);
+
+    await pickLocalDirectory(user);
+
+    expect(screen.getByRole("radio", { name: /Run as a composite tree/i })).toBeDisabled();
+    expect(screen.getByText(/too old to isolate composite trees/i)).toBeInTheDocument();
+  });
 });
 
 // The payload is what the server stores and the daemon later reads; a missing
@@ -344,5 +377,21 @@ describe("buildLocalDirectoryResourceRef", () => {
         mode: "in_place",
       }),
     ).toEqual({ local_path: "/tmp/x", daemon_id: "d", execution_mode: "in_place" });
+  });
+
+  it("carries workspace_layout when chosen", () => {
+    expect(
+      buildLocalDirectoryResourceRef({
+        localPath: "/Users/dev/srm-all",
+        daemonId: "daemon-1",
+        label: "srm-all",
+        mode: "workspace_layout",
+      }),
+    ).toEqual({
+      local_path: "/Users/dev/srm-all",
+      daemon_id: "daemon-1",
+      label: "srm-all",
+      execution_mode: "workspace_layout",
+    });
   });
 });

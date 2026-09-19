@@ -100,7 +100,7 @@ interface DesktopAPI {
       | "error";
     error?: string;
     /** Whether the path sits inside a git working tree. Only set when ok=true.
-     *  Drives the worktree execution-mode option in the resource UI. */
+     *  Drives the worktree and workspace_layout execution-mode options. */
     is_git_repo?: boolean;
   }>;
   /** Listen for Cmd/Ctrl+W tab-close requests from the main process.

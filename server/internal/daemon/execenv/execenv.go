@@ -88,6 +88,10 @@ type PrepareParams struct {
 	// Mutually exclusive with LocalWorkDir — the daemon picks one based on the
 	// resource's execution_mode.
 	LocalWorktree *LocalWorktreeParams
+	// WorkspaceLayout, when non-nil, builds a composite tree (nested git
+	// worktrees + junctions) under envRoot/workspace. Mutually exclusive with
+	// LocalWorkDir and LocalWorktree.
+	WorkspaceLayout *WorkspaceLayoutParams
 	// HermesSourceHome is the shared Hermes home the per-task overlay is seeded
 	// from — resolved by the daemon via execenv.ResolveHermesProfile so it honors
 	// the agent's custom_env HERMES_HOME and any -p/--profile or sticky selection.
@@ -291,6 +295,8 @@ type Environment struct {
 	// agent exits to commit leftovers, drop the worktree, and learn the
 	// branch name to report as the task's result.
 	LocalWorktree *LocalWorktree
+	// WorkspaceLayout is set for execution_mode=workspace_layout.
+	WorkspaceLayout *WorkspaceLayout
 	// CodexHome is the path to the per-task CODEX_HOME directory (set only for codex provider).
 	CodexHome string
 	// ClaudeSettingsPath is a task-local --settings JSON file that applies
@@ -494,7 +500,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// envRoot.
 	workDir := filepath.Join(envRoot, "workdir")
 	scratchDirs := []string{filepath.Join(envRoot, "output"), filepath.Join(envRoot, "logs")}
-	if params.LocalWorkDir == "" && params.LocalWorktree == nil {
+	if params.LocalWorkDir == "" && params.LocalWorktree == nil && params.WorkspaceLayout == nil {
 		scratchDirs = append(scratchDirs, workDir)
 	} else if params.LocalWorkDir != "" {
 		workDir = params.LocalWorkDir
@@ -553,11 +559,33 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}
 	}
 
+	var workspaceLayout *WorkspaceLayout
+	if params.WorkspaceLayout != nil {
+		wlParams := *params.WorkspaceLayout
+		wlParams.EnvRoot = envRoot
+		wlParams.AgentName = params.AgentName
+		wlParams.TaskID = params.TaskID
+		wlParams.IssueIdentifier = params.IssueIdentifier
+		var err error
+		workspaceLayout, err = PrepareWorkspaceLayout(wlParams, logger)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if prepareSucceeded {
+				return
+			}
+			workspaceLayout.Discard(logger)
+		}()
+		workDir = workspaceLayout.WorkDir
+	}
+
 	env := &Environment{
 		RootDir:           envRoot,
 		WorkDir:           workDir,
 		LocalDirectory:    params.LocalWorkDir != "",
 		LocalWorktree:     localWorktree,
+		WorkspaceLayout:   workspaceLayout,
 		MulticaConfigRoot: multicaConfigRoot,
 		logger:            logger,
 		lockFile:          lockFile,
@@ -632,7 +660,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(envRoot, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil || params.WorkspaceLayout != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
 		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {

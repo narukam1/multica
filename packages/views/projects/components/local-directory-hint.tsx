@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { FolderOpen, GitBranch } from "lucide-react";
+import { FolderOpen, GitBranch, Layers } from "lucide-react";
 import { projectResourcesOptions } from "@multica/core/projects";
 import type { LocalDirectoryResourceRef, ProjectResource } from "@multica/core/types";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -21,6 +21,8 @@ import { localDirectoryLabel } from "./local-directory-label";
  *   isolated worktree of the repo and hands back a branch. Saying "in-place"
  *   here would be a plain factual error, and it would send the user looking
  *   for results in a directory that will not have changed (MUL-5707).
+ * - `workspace_layout`: same isolation promise, but the tree is composite
+ *   (nested git worktrees + junctions) and results are `multica/…` branches.
  *
  * Rendered only on desktop: web has no daemon to compare against, so the
  * "this machine" check would always fail. Web users will see local_directory
@@ -60,29 +62,37 @@ export function LocalDirectoryHint({
       {matches.map((resource) => {
         const ref = resource.resource_ref;
         const label = localDirectoryLabel(resource);
-        // Anything other than an explicit "worktree" is in_place: the mode is
-        // absent on resources created before it existed, and an unknown value
-        // from a newer server must not claim isolation we cannot verify.
-        const isWorktree = ref.execution_mode === "worktree";
+        // Absent / unknown modes stay in_place: claiming isolation we cannot
+        // verify is the one wrong answer. workspace_layout is an explicit
+        // isolation mode and gets its own copy.
+        const mode = ref.execution_mode;
+        const isolated = mode === "worktree" || mode === "workspace_layout";
         return (
           <div key={resource.id} className="space-y-0.5">
             <div className="flex items-center gap-2">
-              {isWorktree ? (
+              {mode === "workspace_layout" ? (
+                <Layers className="size-3 shrink-0" />
+              ) : isolated ? (
                 <GitBranch className="size-3 shrink-0" />
               ) : (
                 <FolderOpen className="size-3 shrink-0" />
               )}
               <span className="truncate">
-                {isWorktree
-                  ? t(($) => $.resources.chat_hint_worktree_prefix)
-                  : t(($) => $.resources.chat_hint_prefix)}
+                {mode === "workspace_layout"
+                  ? t(($) => $.resources.chat_hint_layout_prefix)
+                  : isolated
+                    ? t(($) => $.resources.chat_hint_worktree_prefix)
+                    : t(($) => $.resources.chat_hint_prefix)}
                 <span className="font-medium text-foreground"> {label} </span>
                 <span className="font-mono opacity-70">({ref.local_path})</span>
               </span>
             </div>
-            {/* Where the work ends up. Only worktree mode needs saying: in
-                place, the answer is the directory already named above. */}
-            {isWorktree && (
+            {mode === "workspace_layout" && (
+              <div className="pl-5 opacity-80">
+                {t(($) => $.resources.chat_hint_layout_note)}
+              </div>
+            )}
+            {mode === "worktree" && (
               <div className="pl-5 opacity-80">
                 {t(($) => $.resources.chat_hint_worktree_note)}
               </div>

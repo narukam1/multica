@@ -45,8 +45,16 @@ vi.mock("@multica/core/projects", () => ({
 // A backend that predates the capability signal: the client must assume it
 // would silently drop execution_mode.
 vi.mock("@multica/core/config", () => ({
-  useConfigStore: (selector: (state: { localWorktreeSupported: boolean }) => unknown) =>
-    selector({ localWorktreeSupported: false }),
+  useConfigStore: (
+    selector: (state: {
+      localWorktreeSupported: boolean;
+      localWorkspaceLayoutSupported: boolean;
+    }) => unknown,
+  ) =>
+    selector({
+      localWorktreeSupported: false,
+      localWorkspaceLayoutSupported: false,
+    }),
 }));
 
 vi.mock("@multica/core/runtimes", () => ({

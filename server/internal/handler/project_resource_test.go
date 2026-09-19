@@ -1341,6 +1341,7 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 		{"absent means in_place", "", ""},
 		{"explicit in_place", "in_place", "in_place"},
 		{"worktree", "worktree", "worktree"},
+		{"workspace_layout", "workspace_layout", "workspace_layout"},
 		{"surrounding whitespace is trimmed", "  worktree  ", "worktree"},
 	}
 	for _, tc := range accepted {

@@ -529,6 +529,12 @@ func TestGetConfigDeclaresLocalWorktreeSupport(t *testing.T) {
 	if _, ok := raw["local_worktree_supported"]; !ok {
 		t.Fatal("local_worktree_supported missing from the JSON body")
 	}
+	if !cfg.LocalWorkspaceLayoutSupported {
+		t.Fatal("this build runs the workspace_layout save gate but does not advertise it; clients will hide the mode")
+	}
+	if _, ok := raw["local_workspace_layout_supported"]; !ok {
+		t.Fatal("local_workspace_layout_supported missing from the JSON body")
+	}
 }
 
 // Web/Desktop can run ahead of a manually deployed backend. Handlers that

@@ -20,6 +20,12 @@ const (
 	// unblocked, which let exactly such a daemon through (MUL-5707). A daemon
 	// that implements the mode says so; one that does not, cannot.
 	DaemonCapabilityLocalWorktreeV1 = "local-worktree-v1"
+	// DaemonCapabilityLocalWorkspaceLayoutV1 advertises that the daemon can
+	// materialise a composite workspace (nested git worktrees + junctions)
+	// from a project's workspace-layout.yaml. Same fail-closed reason as
+	// local-worktree-v1: an old daemon that json-skips execution_mode would
+	// run workspace_layout tasks in place on the reference tree.
+	DaemonCapabilityLocalWorkspaceLayoutV1 = "local-workspace-layout-v1"
 	// DaemonCapabilitySourceContextQuickCreateV1 advertises support for the
 	// two-section quick-create prompt that keeps a new instruction separate
 	// from immutable historical source context.

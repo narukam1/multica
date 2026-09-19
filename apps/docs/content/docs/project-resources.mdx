@@ -70,6 +70,12 @@ The agent works directly in your directory, and runs execute one at a time. When
 
 Waiting does not modify the directory. A waiting run can be cancelled; otherwise it waits until the directory becomes available.
 
+### `workspace_layout` — composite tree
+
+For aggregate checkouts (root git + nested independent repos + shared out-of-tree assets). The runtime reads `.index/workspace-layout.yaml` on the bound reference tree, `git worktree add`s each independent repo into this run's workspace, and mounts `standard` / `.codegraph` back at the reference tree (`mklink /J` on Windows, directory symlink on Linux — the YAML `junction` field is the intent, not the OS command). It does not worktree only the root, and it does not edit the reference tree. Results are `multica/<issue>` branches on each member repo; the working copy can be reclaimed. Unmount uses `rmdir` / `unlink` on the mount point only, never a recursive delete through the link.
+
+Requires the runtime to advertise `local-workspace-layout-v1`. Older daemons are refused at save and claim time instead of running in place.
+
 ### `worktree` — "Parallel"
 
 Each run gets its own [git worktree](https://git-scm.com/docs/git-worktree) of your repo, created inside the runtime's own workspace directory. **Runs on the same directory run concurrently — none of them wait**, and none of them write to your working copy.

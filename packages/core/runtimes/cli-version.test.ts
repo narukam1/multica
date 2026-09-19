@@ -5,6 +5,7 @@ import {
   checkQuickCreateFieldsCliVersion,
   MIN_CHAT_PROJECT_CONTEXT_CLI_VERSION,
   runtimeAdvertisesLocalWorktree,
+  runtimeAdvertisesLocalWorkspaceLayout,
 } from "./cli-version";
 
 describe("checkQuickCreateCliVersion", () => {
@@ -150,5 +151,28 @@ describe("runtimeAdvertisesLocalWorktree", () => {
     expect(runtimeAdvertisesLocalWorktree(other, "d1")).toBe(false);
     expect(runtimeAdvertisesLocalWorktree([], "d1")).toBe(false);
     expect(runtimeAdvertisesLocalWorktree(other, null)).toBe(false);
+  });
+});
+
+describe("runtimeAdvertisesLocalWorkspaceLayout", () => {
+  const row = (metadata: unknown) => ({
+    daemon_id: "d1",
+    last_seen_at: "2026-08-13T00:00:00Z",
+    metadata,
+  });
+
+  it("reads the advertised capability and ignores worktree-only rows", () => {
+    expect(
+      runtimeAdvertisesLocalWorkspaceLayout(
+        [row({ capabilities: ["local-workspace-layout-v1"] })],
+        "d1",
+      ),
+    ).toBe(true);
+    expect(
+      runtimeAdvertisesLocalWorkspaceLayout(
+        [row({ capabilities: ["local-worktree-v1"] })],
+        "d1",
+      ),
+    ).toBe(false);
   });
 });

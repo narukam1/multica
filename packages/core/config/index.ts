@@ -32,6 +32,10 @@ interface ConfigState {
   // predate this signal are caught by the same net — indistinguishable from
   // here, and only one of the two answers is safe to guess.
   localWorktreeSupported: boolean;
+  // Whether the connected server validates execution_mode=workspace_layout.
+  // Defaults to false: servers that only know in_place/worktree must not be
+  // offered the composite-tree option.
+  localWorkspaceLayoutSupported: boolean;
   // Whether this server persists conversation_starters on agent create/update.
   // Older handlers accepted the unknown field and returned success while
   // dropping it, so absent must fail closed.
@@ -54,6 +58,7 @@ interface ConfigState {
   setFeatureFlags: (flags?: Record<string, boolean>) => void;
   setServerVersion: (version?: string) => void;
   setLocalWorktreeSupported: (supported?: boolean) => void;
+  setLocalWorkspaceLayoutSupported: (supported?: boolean) => void;
   setAgentConversationStartersSupported: (supported?: boolean) => void;
   setCommentDeleteKeepRepliesSupported: (supported?: boolean) => void;
 }
@@ -70,6 +75,7 @@ export const configStore = createStore<ConfigState>((set) => ({
   featureFlags: {},
   serverVersion: "",
   localWorktreeSupported: false,
+  localWorkspaceLayoutSupported: false,
   agentConversationStartersSupported: false,
   commentDeleteKeepRepliesSupported: false,
   setCdnConfig: ({ cdnDomain, cdnSigned = false }) => set({ cdnDomain, cdnSigned }),
@@ -85,6 +91,8 @@ export const configStore = createStore<ConfigState>((set) => ({
   setServerVersion: (version = "") => set({ serverVersion: version }),
   setLocalWorktreeSupported: (supported = false) =>
     set({ localWorktreeSupported: supported === true }),
+  setLocalWorkspaceLayoutSupported: (supported = false) =>
+    set({ localWorkspaceLayoutSupported: supported === true }),
   setAgentConversationStartersSupported: (supported = false) =>
     set({ agentConversationStartersSupported: supported === true }),
   setCommentDeleteKeepRepliesSupported: (supported = false) =>
