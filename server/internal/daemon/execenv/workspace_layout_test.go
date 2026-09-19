@@ -52,6 +52,34 @@ func TestPrepareWorkspaceLayoutBuildsNestedReposAndJunction(t *testing.T) {
 	}
 }
 
+func TestLayoutBranchNameKeepsLatinIssueIdentifier(t *testing.T) {
+	got := layoutBranchName(WorkspaceLayoutParams{IssueIdentifier: "VEGA-5", TaskID: "task-1"})
+	if got != "multica/vega-5" {
+		t.Fatalf("layoutBranchName = %q, want multica/vega-5", got)
+	}
+}
+
+func TestGitArgsEnableLongPaths(t *testing.T) {
+	got := gitArgs("/repo", "worktree", "add", "-b", "b", "/dest", "HEAD")
+	if len(got) < 2 || got[0] != "-c" || got[1] != gitLongPathsConfig {
+		t.Fatalf("gitArgs = %q, want leading -c %s", got, gitLongPathsConfig)
+	}
+}
+
+func TestCleanupFailedWorktreeAddRemovesOrphanBranch(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root, map[string]string{"README.md": "x\n"})
+	dest := filepath.Join(t.TempDir(), "wt")
+	if err := runGitWorktreeAdd(root, dest, "multica/vega-5", "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	cleanupFailedWorktreeAdd(root, dest, "multica/vega-5")
+	out, err := exec.Command("git", "-C", root, "rev-parse", "--verify", "multica/vega-5").CombinedOutput()
+	if err == nil {
+		t.Fatalf("orphan branch still present: %s", out)
+	}
+}
+
 func TestPrepareWorkspaceLayoutRequiresLayoutFile(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root, map[string]string{"README.md": "x\n"})

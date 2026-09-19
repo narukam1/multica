@@ -89,8 +89,23 @@ func setupGitWorktree(gitRoot, worktreePath, branchName, baseRef string) error {
 	return err
 }
 
+// gitLongPathsConfig lets Git for Windows write paths past MAX_PATH via \\?\
+// during worktree checkout. Isolation is per-repo; the files inside still have
+// to land on disk, and a dest under multica_workspaces + a deep Java package
+// exceeds 260 even when the reference tree on D: does not.
+const gitLongPathsConfig = "core.longpaths=true"
+
+func gitArgs(dir string, args ...string) []string {
+	out := make([]string, 0, 4+len(args))
+	out = append(out, "-c", gitLongPathsConfig)
+	if dir != "" {
+		out = append(out, "-C", dir)
+	}
+	return append(out, args...)
+}
+
 func runGitWorktreeAdd(gitRoot, worktreePath, branchName, baseRef string) error {
-	cmd := exec.Command("git", "-C", gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)
+	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)...)
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), err)
@@ -98,10 +113,21 @@ func runGitWorktreeAdd(gitRoot, worktreePath, branchName, baseRef string) error 
 	return nil
 }
 
+// cleanupFailedWorktreeAdd drops the branch and any half-registered worktree
+// that git leaves behind when checkout fails after `worktree add -b`.
+func cleanupFailedWorktreeAdd(gitRoot, worktreePath, branchName string) {
+	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "remove", "--force", worktreePath)...).Run()
+	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "prune")...).Run()
+	if branchName != "" {
+		_ = exec.Command("git", gitArgs(gitRoot, "branch", "-D", branchName)...).Run()
+	}
+	_ = os.RemoveAll(worktreePath)
+}
+
 // removeGitWorktree removes a worktree and its branch. Best-effort: logs errors.
 func removeGitWorktree(gitRoot, worktreePath, branchName string, logger *slog.Logger) {
 	// Remove the worktree.
-	cmd := exec.Command("git", "-C", gitRoot, "worktree", "remove", "--force", worktreePath)
+	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "remove", "--force", worktreePath)...)
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn("execenv: git worktree remove failed", "output", strings.TrimSpace(string(out)), "error", err)
@@ -109,7 +135,7 @@ func removeGitWorktree(gitRoot, worktreePath, branchName string, logger *slog.Lo
 
 	// Delete the branch (best-effort).
 	if branchName != "" {
-		cmd = exec.Command("git", "-C", gitRoot, "branch", "-D", branchName)
+		cmd = exec.Command("git", gitArgs(gitRoot, "branch", "-D", branchName)...)
 
 		if out, err := cmd.CombinedOutput(); err != nil {
 			logger.Warn("execenv: git branch delete failed", "branch", branchName, "output", strings.TrimSpace(string(out)), "error", err)

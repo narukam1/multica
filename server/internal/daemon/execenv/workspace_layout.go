@@ -124,16 +124,9 @@ func layoutBranchName(params WorkspaceLayoutParams) string {
 	if key == "" {
 		key = taskKey(params.TaskID)
 	}
-	key = strings.ToLower(strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
-			return r
-		}
-		return '-'
-	}, key))
-	if key == "" {
-		key = "task"
-	}
-	return "multica/" + key
+	// sanitizeName lowercases first. Mapping before ToLower turned VEGA-5
+	// into -----5 because uppercase Latin is not in [a-z0-9-_].
+	return "multica/" + sanitizeName(key)
 }
 
 func materialiseAlways(root, destRoot, branch string, cfg workspaceLayoutFile, wl *WorkspaceLayout, logger *slog.Logger) error {
@@ -286,6 +279,7 @@ func addMemberWorktree(root, destRoot, rel, branch string, wl *WorkspaceLayout, 
 	addErr := runGitWorktreeAdd(src, dest, branch, "HEAD")
 	unlock()
 	if addErr != nil {
+		cleanupFailedWorktreeAdd(src, dest, branch)
 		return fmt.Errorf("workspace_layout: worktree add %s: %w", rel, addErr)
 	}
 	wl.Members = append(wl.Members, workspaceLayoutMember{
