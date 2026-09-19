@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 func TestFindLocalDirectoryAssignment(t *testing.T) {
@@ -845,6 +847,121 @@ func TestAcquireLocalDirectoryLockSkipsWorktreeMode(t *testing.T) {
 	}
 	if got := d.localPathLocks.Holder(assignment.RealPath); got != "" {
 		t.Fatalf("holder = %q, want empty: worktree mode must not lock the path", got)
+	}
+}
+
+func TestAcquireLocksWorkspaceLayoutDestNotReferencePath(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-mine"
+	tmp := t.TempDir()
+	wsRoot := t.TempDir()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     tmp,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorkspaceLayout,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+	assignment, err := localDirectoryAssignmentForTask(Task{ID: "t1", ProjectResources: resources}, daemonID)
+	if err != nil {
+		t.Fatalf("assignment: %v", err)
+	}
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID, WorkspacesRoot: wsRoot},
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+	task := Task{
+		ID:               "t1",
+		WorkspaceID:      "9ff372c4-ae7b-48f8-9433-34539dcdec38",
+		WorkspaceSlug:    "vega-2b6i",
+		IssueID:          "01a0ba16-7cc6-77c8-97ff-81b6076b4f0f",
+		IssueIdentifier:  "VEGA-5",
+		ProjectResources: resources,
+	}
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), task, slog.Default())
+	if abort {
+		t.Fatal("acquisition aborted")
+	}
+	if release == nil {
+		t.Fatal("layout dest lock was not taken")
+	}
+	defer release()
+	if got := d.localPathLocks.Holder(assignment.RealPath); got != "" {
+		t.Fatalf("reference path holder = %q, want empty", got)
+	}
+	dest := execenv.IssueLayoutWorkDir(execenv.WorkspaceLayoutParams{
+		WorkspacesRoot:  wsRoot,
+		WorkspaceID:     task.WorkspaceID,
+		WorkspaceSlug:   task.WorkspaceSlug,
+		IssueID:         task.IssueID,
+		IssueIdentifier: task.IssueIdentifier,
+	})
+	if got := d.localPathLocks.Holder(dest); got != "t1" {
+		t.Fatalf("dest holder = %q, want t1", got)
+	}
+}
+
+func TestAcquireLocksInheritedLayoutOwnerDest(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-mine"
+	tmp := t.TempDir()
+	wsRoot := t.TempDir()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     tmp,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorkspaceLayout,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID, WorkspacesRoot: wsRoot},
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+	parent := Task{
+		ID:               "parent-task",
+		WorkspaceID:      "9ff372c4-ae7b-48f8-9433-34539dcdec38",
+		WorkspaceSlug:    "vega-2b6i",
+		IssueID:          "01a0ba16-7cc6-77c8-97ff-81b6076b4f0f",
+		IssueIdentifier:  "VEGA-5",
+		ProjectResources: resources,
+	}
+	child := Task{
+		ID:                    "child-task",
+		WorkspaceID:           parent.WorkspaceID,
+		WorkspaceSlug:         parent.WorkspaceSlug,
+		IssueID:               "01a0ba17-7cc6-77c8-97ff-81b6076b4f10",
+		IssueIdentifier:       "VEGA-6",
+		IssueParentID:         parent.IssueID,
+		IssueParentIdentifier: parent.IssueIdentifier,
+		LayoutOwnerID:         parent.IssueID,
+		LayoutOwnerIdentifier: parent.IssueIdentifier,
+		ProjectResources:      resources,
+	}
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), parent, slog.Default())
+	if abort || release == nil {
+		t.Fatal("parent dest lock was not taken")
+	}
+	defer release()
+
+	parentDest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(parent, wsRoot, ""))
+	childDest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(child, wsRoot, ""))
+	if parentDest == "" || parentDest != childDest {
+		t.Fatalf("inherited dest mismatch:\nparent %s\nchild  %s", parentDest, childDest)
+	}
+	if got := d.localPathLocks.Holder(childDest); got != parent.ID {
+		t.Fatalf("child dest holder = %q, want %s", got, parent.ID)
 	}
 }
 

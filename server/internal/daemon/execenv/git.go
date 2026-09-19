@@ -113,12 +113,58 @@ func runGitWorktreeAdd(gitRoot, worktreePath, branchName, baseRef string) error 
 	return nil
 }
 
-// cleanupFailedWorktreeAdd drops the branch and any half-registered worktree
-// that git leaves behind when checkout fails after `worktree add -b`.
-func cleanupFailedWorktreeAdd(gitRoot, worktreePath, branchName string) {
+func gitBranchExists(gitRoot, branchName string) bool {
+	if gitRoot == "" || branchName == "" {
+		return false
+	}
+	cmd := exec.Command("git", gitArgs(gitRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)...)
+	return cmd.Run() == nil
+}
+
+func worktreeOnBranch(dir, branchName string) bool {
+	if dir == "" || branchName == "" {
+		return false
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	cmd := exec.Command("git", gitArgs(dir, "rev-parse", "--abbrev-ref", "HEAD")...)
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == branchName
+}
+
+// attachLayoutWorktree mounts dest onto branch. An existing branch is remounted
+// (`worktree add dest branch`) so later runs on the same issue keep gathering
+// commits. A missing branch is created from baseRef (`worktree add -b`).
+func attachLayoutWorktree(gitRoot, worktreePath, branchName, baseRef string) (createdBranch bool, err error) {
+	if gitBranchExists(gitRoot, branchName) {
+		cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", worktreePath, branchName)...)
+		if out, addErr := cmd.CombinedOutput(); addErr != nil {
+			return false, fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), addErr)
+		}
+		return false, nil
+	}
+	if strings.TrimSpace(baseRef) == "" {
+		baseRef = "HEAD"
+	}
+	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)...)
+	if out, addErr := cmd.CombinedOutput(); addErr != nil {
+		return true, fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), addErr)
+	}
+	return true, nil
+}
+
+// cleanupFailedWorktreeAdd drops a half-registered worktree. The branch is
+// deleted only when this call created it — never an issue branch that already
+// held prior runs' commits.
+func cleanupFailedWorktreeAdd(gitRoot, worktreePath, branchName string, createdBranch bool) {
 	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "remove", "--force", worktreePath)...).Run()
 	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "prune")...).Run()
-	if branchName != "" {
+	if createdBranch && branchName != "" {
 		_ = exec.Command("git", gitArgs(gitRoot, "branch", "-D", branchName)...).Run()
 	}
 	_ = os.RemoveAll(worktreePath)

@@ -149,6 +149,15 @@ type Task struct {
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
 	ParentIssueID         string `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier string `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
+	// IssueParent* are the claimed issue's own parent_issue_id. They are not
+	// the quick-create "file the new issue under" fields above. workspace_layout
+	// uses them to inherit dest/branch when this step has no distinct TB key.
+	IssueParentID         string `json:"issue_parent_id,omitempty"`
+	IssueParentIdentifier string `json:"issue_parent_identifier,omitempty"`
+	// LayoutOwner* are the resolved composite-tree owner after walking parents.
+	// When present they win over a one-hop IssueParent inherit.
+	LayoutOwnerID         string `json:"layout_owner_id,omitempty"`
+	LayoutOwnerIdentifier string `json:"layout_owner_identifier,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription describe the human
 	// the agent is working on behalf of. v1 sources them from the runtime
 	// owner (the user who registered the daemon). Empty when the runtime has

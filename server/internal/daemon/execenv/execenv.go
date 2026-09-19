@@ -565,7 +565,21 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		wlParams.EnvRoot = envRoot
 		wlParams.AgentName = params.AgentName
 		wlParams.TaskID = params.TaskID
-		wlParams.IssueIdentifier = params.IssueIdentifier
+		if wlParams.WorkspacesRoot == "" {
+			wlParams.WorkspacesRoot = params.WorkspacesRoot
+		}
+		if wlParams.WorkspaceID == "" {
+			wlParams.WorkspaceID = params.WorkspaceID
+		}
+		if wlParams.WorkspaceSlug == "" {
+			wlParams.WorkspaceSlug = params.WorkspaceSlug
+		}
+		if wlParams.IssueIdentifier == "" {
+			wlParams.IssueIdentifier = params.IssueIdentifier
+		}
+		if wlParams.IssueID == "" {
+			wlParams.IssueID = params.Task.IssueID
+		}
 		var err error
 		workspaceLayout, err = PrepareWorkspaceLayout(wlParams, logger)
 		if err != nil {
@@ -575,7 +589,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 			if prepareSucceeded {
 				return
 			}
-			workspaceLayout.Discard(logger)
+			workspaceLayout.rollbackPrepare(logger)
 		}()
 		workDir = workspaceLayout.WorkDir
 	}

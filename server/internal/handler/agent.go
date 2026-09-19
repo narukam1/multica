@@ -511,6 +511,10 @@ type AgentTaskResponse struct {
 	SquadName                string               `json:"squad_name,omitempty"`                  // display name for the picker squad
 	ParentIssueID            string               `json:"parent_issue_id,omitempty"`             // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier    string               `json:"parent_issue_identifier,omitempty"`     // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	IssueParentID            string               `json:"issue_parent_id,omitempty"`             // claimed issue's parent_issue_id; not the quick-create file-under fields
+	IssueParentIdentifier    string               `json:"issue_parent_identifier,omitempty"`     // human-readable identifier of that parent
+	LayoutOwnerID            string               `json:"layout_owner_id,omitempty"`             // walked workspace_layout dest/branch owner
+	LayoutOwnerIdentifier    string               `json:"layout_owner_identifier,omitempty"`     // human-readable identifier of that owner
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and

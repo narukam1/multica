@@ -6091,26 +6091,27 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		return nil, true
 	}
 
-	// Worktree mode is the whole point of not serialising: each task gets its
-	// own checkout of the repo inside its env root, so there is no shared
-	// mutable state on the user's path to protect. Skipping the mutex here is
-	// what lets sibling tasks on one directory run concurrently. Path
-	// validation above still applies — git needs to write worktree
-	// registrations into the user's repo.
-	if assignment.IsolatesWorkingCopy() {
+	// Isolated checkouts skip the *reference-tree* mutex so different issues
+	// can run in parallel. workspace_layout still serialises writers that share
+	// one issue dest (one feature branch). Official worktree mode stays free.
+	lockPath := assignment.RealPath
+	if assignment.UsesWorkspaceLayout() {
+		if localDirectoryLockExempt(task) {
+			taskLog.Info("local_directory: chat task, skipping layout dest lock")
+			return nil, false
+		}
+		dest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(task, d.cfg.WorkspacesRoot, ""))
+		if dest == "" {
+			taskLog.Info("workspace_layout: no issue dest, skipping dest lock")
+			return nil, false
+		}
+		lockPath = dest
+		taskLog.Info("workspace_layout: locking issue dest", "dest", dest)
+	} else if assignment.IsolatesWorkingCopy() {
 		taskLog.Info("local_directory: isolated mode, skipping path mutex",
 			"execution_mode", assignment.Ref.ExecutionMode)
 		return nil, false
-	}
-
-	// A conversation is not a second writer. Everything above still applied —
-	// the mode was checked, the path was validated, and the assignment stands,
-	// so this task keeps the user's directory as its working directory. Only
-	// the queueing is skipped, which is what stops a chat turn from sitting
-	// behind a 20-minute build with nothing to contribute to it (issue #7344).
-	// See localDirectoryLockExempt for why the mutex does not owe this task a
-	// slot.
-	if localDirectoryLockExempt(task) {
+	} else if localDirectoryLockExempt(task) {
 		taskLog.Info("local_directory: chat task, skipping path mutex")
 		return nil, false
 	}
@@ -6191,7 +6192,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			}()
 		})
 	}
-	release, err = d.localPathLocks.Acquire(waitCtx, assignment.RealPath, task.ID, onWait)
+	release, err = d.localPathLocks.Acquire(waitCtx, lockPath, task.ID, onWait)
 	if err != nil {
 		// If the wait was cut short because the server finalized the task
 		// (terminal state) or deleted the row, the row is already in a
@@ -6431,6 +6432,28 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 		return execenv.GCMeta{}, false
 	}
 	return meta, true
+}
+
+func workspaceLayoutParamsForTask(task Task, workspacesRoot, localPath string) execenv.WorkspaceLayoutParams {
+	return execenv.WorkspaceLayoutParams{
+		LocalPath:             localPath,
+		WorkspacesRoot:        workspacesRoot,
+		WorkspaceID:           task.WorkspaceID,
+		WorkspaceSlug:         task.WorkspaceSlug,
+		IssueID:               task.IssueID,
+		IssueIdentifier:       task.IssueIdentifier,
+		IssueParentID:         task.IssueParentID,
+		IssueParentIdentifier: task.IssueParentIdentifier,
+		LayoutOwnerID:         task.LayoutOwnerID,
+		LayoutOwnerIdentifier: task.LayoutOwnerIdentifier,
+		RelevantRepos: execenv.ParseLayoutRepoPaths(
+			task.ProjectDescription,
+			task.TriggerCommentContent,
+			task.WorkspaceContext,
+			task.HandoffNote,
+			task.ThreadName,
+		),
+	}
 }
 
 func taskRootDirParams(workspacesRoot string, task Task) execenv.RootDirParams {
@@ -8134,7 +8157,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			Task:                  taskCtx,
 		}
 		if localAssignment.UsesWorkspaceLayout() {
-			prepParams.WorkspaceLayout = &execenv.WorkspaceLayoutParams{LocalPath: localAssignment.AbsPath}
+			wl := workspaceLayoutParamsForTask(task, d.cfg.WorkspacesRoot, localAssignment.AbsPath)
+			prepParams.WorkspaceLayout = &wl
 			env, err = d.prepareExecutionEnvironment(prepareCtx, prepParams)
 			if err != nil {
 				return TaskResult{}, asEnvironmentSetupFailure(fmt.Errorf("prepare execution environment: %w", err))

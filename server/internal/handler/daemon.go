@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -2343,6 +2344,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
 	var issueNumber int32
+	var layoutIssue *db.Issue
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -2618,6 +2620,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		resp.ThreadName = issue.Title
 		issueNumber = issue.Number
+		layoutIssueCopy := issue
+		layoutIssue = &layoutIssueCopy
+		if issue.ParentIssueID.Valid {
+			resp.IssueParentID = uuidToString(issue.ParentIssueID)
+		}
 
 		// Issue-state delta (MUL-7344). Every field below already sits on the
 		// `issue` row this claim loaded, so this costs one extra read — the
@@ -3541,8 +3548,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// quick-create) so every agent running in the workspace sees the same
 	// shared context. Empty string when the owner hasn't set one; the daemon
 	// skips rendering the heading in that case.
+	issuePrefix := ""
 	if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(resp.WorkspaceID)); err == nil {
 		resp.WorkspaceSlug = ws.Slug
+		issuePrefix = ws.IssuePrefix
 		if issueNumber > 0 {
 			resp.IssueIdentifier = service.IssueIdentifier(ws.IssuePrefix, issueNumber)
 		}
@@ -3555,6 +3564,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			"workspace_id", resp.WorkspaceID,
 			"error", err,
 		)
+	}
+	if layoutIssue != nil {
+		h.attachClaimLayoutKey(r.Context(), &resp, *layoutIssue, issuePrefix)
 	}
 
 	// Workspace status catalog (MUL-6460): active CUSTOM statuses only, so the
@@ -3706,6 +3718,53 @@ func worktreeClaimBlockReason(resources []ProjectResourceData, runtime db.AgentR
 		}
 	}
 	return ""
+}
+
+// attachClaimLayoutKey fills the claimed issue's real parent and the walked
+// workspace_layout owner. It must not touch ParentIssueID — that field is the
+// quick-create "file under" pointer, not this issue's parent.
+func (h *Handler) attachClaimLayoutKey(ctx context.Context, resp *AgentTaskResponse, issue db.Issue, prefix string) {
+	if resp == nil || !issue.ID.Valid {
+		return
+	}
+	if issue.ParentIssueID.Valid {
+		resp.IssueParentID = uuidToString(issue.ParentIssueID)
+		if parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          issue.ParentIssueID,
+			WorkspaceID: issue.WorkspaceID,
+		}); err == nil && parent.ID.Valid {
+			resp.IssueParentIdentifier = service.IssueIdentifier(prefix, parent.Number)
+		}
+	}
+	key := execenv.WalkLayoutOwner(uuidToString(issue.ID), resp.IssueIdentifier, func(id string) (ident, parentID, parentIdent string, ok bool) {
+		parsed, err := util.ParseUUID(id)
+		if err != nil {
+			return "", "", "", false
+		}
+		row, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          parsed,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil || !row.ID.Valid {
+			return "", "", "", false
+		}
+		ident = service.IssueIdentifier(prefix, row.Number)
+		if !row.ParentIssueID.Valid {
+			return ident, "", "", true
+		}
+		parent, perr := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          row.ParentIssueID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if perr != nil || !parent.ID.Valid {
+			return ident, uuidToString(row.ParentIssueID), "", true
+		}
+		return ident, uuidToString(parent.ID), service.IssueIdentifier(prefix, parent.Number), true
+	})
+	if key.IssueID != "" {
+		resp.LayoutOwnerID = key.IssueID
+		resp.LayoutOwnerIdentifier = key.IssueIdentifier
+	}
 }
 
 // ClaimTaskByRuntime atomically claims the next queued task for a runtime.
