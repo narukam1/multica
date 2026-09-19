@@ -8247,7 +8247,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			}
 			if finalizeErr != nil {
 				taskLog.Error("workspace_layout finalize failed", "error", finalizeErr)
-				taskResult.Error = finalizeErr.Error()
+				if returnErr == nil {
+					returnErr = finalizeErr
+				} else {
+					returnErr = errors.Join(returnErr, finalizeErr)
+				}
 			}
 		}()
 	}

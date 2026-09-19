@@ -75,26 +75,22 @@
 /* -----------------------------------------------------------------------------
  * Landing editorial serif
  *
- * The landing tree swaps the app's `--font-serif` (Source Serif 4, set on <html>
- * by app/layout.tsx) for Instrument Serif, loaded by app/(landing)/layout.tsx as
- * `--font-instrument-serif`. The stack is composed here in static CSS rather
- * than in next/font's `fallback` for the same reasons `--font-sans` is composed
- * in app/globals.css: it has to be overridable per `<html lang>`, and it stays
- * CSP-safe (no inline <style>). Keep the CJK ordering here in sync with the
- * `--font-sans` chain in app/globals.css.
+ * The landing tree swaps the app's `--font-serif` for `--font-instrument-serif`
+ * (system serif; no next/font/google). The stack is composed here in static CSS
+ * for the same reasons `--font-sans` is composed in app/globals.css: it has to
+ * be overridable per `<html lang>`, and it stays CSP-safe. Keep the CJK
+ * ordering here in sync with the `--font-sans` chain in app/globals.css.
  *
- * Instrument Serif ships Latin only, so CJK headlines used to fall out of the
- * stack entirely and land on the browser's default face — a sans, next to Latin
- * set in a high-contrast display serif. The tail hands Han and Hangul to a
+ * The Latin display face is a system serif. The tail hands Han and Hangul to a
  * platform Songti/Mincho/Myeongjo instead of shipping a multi-megabyte CJK
- * webfont (an earlier `Noto_Serif_SC` next/font entry was never referenced by
- * any rule and requested `subsets: ["latin"]`, so it downloaded no CJK glyphs).
+ * webfont.
  *
  * Default (en / zh / ko): Latin renders with Instrument Serif; Han falls through
  * to the Chinese serifs, then Hangul to the Korean ones. Chinese MUST stay
  * before Korean so zh users never get Korean Hanja glyph shapes (Hangul is a
  * separate Unicode block, so ko users still get Korean fonts for Hangul). */
 .landing-light {
+    --font-instrument-serif: ui-serif, Georgia, "Times New Roman", serif;
     --font-serif: var(--font-instrument-serif), "Songti SC", "SimSun",
         "Noto Serif CJK SC", "Nanum Myeongjo", "AppleMyungjo", "Batang",
         "Noto Serif CJK KR", ui-serif, serif;
