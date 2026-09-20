@@ -1386,6 +1386,58 @@ func TestValidateLocalDirectoryRefExecutionMode(t *testing.T) {
 	}
 }
 
+func TestValidateLocalDirectoryRefAccess(t *testing.T) {
+	accepted := []struct {
+		name   string
+		access string
+		want   string
+	}{
+		{"absent means writable", "", ""},
+		{"read", "read", "read"},
+		{"write", "write", "write"},
+		{"surrounding whitespace is trimmed", "  read  ", "read"},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := map[string]any{"local_path": "/Users/foo/work", "daemon_id": "d1"}
+			if tc.access != "" {
+				ref["access"] = tc.access
+			}
+			raw, err := json.Marshal(ref)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			out, err := validateLocalDirectoryRef(raw)
+			if err != nil {
+				t.Fatalf("validateLocalDirectoryRef: %v", err)
+			}
+			var got localDirectoryRef
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("unmarshal normalized ref: %v", err)
+			}
+			if got.Access != tc.want {
+				t.Errorf("Access = %q, want %q", got.Access, tc.want)
+			}
+		})
+	}
+
+	for _, access := range []string{"readonly", "READ", "ro"} {
+		t.Run("rejects "+access, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{
+				"local_path": "/Users/foo/work",
+				"daemon_id":  "d1",
+				"access":     access,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if _, err := validateLocalDirectoryRef(raw); err == nil {
+				t.Errorf("access %q was accepted, want a validation error", access)
+			}
+		})
+	}
+}
+
 // latestDaemonCLIVersion feeds the worktree-mode save gate: an old daemon
 // json-skips execution_mode and would run tasks in place, so the gate has to
 // read the version of the binary actually running on the machine — the

@@ -1350,3 +1350,202 @@ func TestIssueTasksStillSerialiseOnPathMutex(t *testing.T) {
 	}
 	release()
 }
+
+func TestIsReadOnlyResource(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		access string
+		want   bool
+	}{
+		{"", false},
+		{"write", false},
+		{"read", true},
+		{"READ", true},
+		{"  read  ", true},
+	}
+	for _, tc := range cases {
+		a := &localDirectoryAssignment{Ref: localDirectoryRef{Access: tc.access}}
+		if got := a.IsReadOnlyResource(); got != tc.want {
+			t.Errorf("IsReadOnlyResource(%q) = %v, want %v", tc.access, got, tc.want)
+		}
+	}
+	var nilAssignment *localDirectoryAssignment
+	if nilAssignment.IsReadOnlyResource() {
+		t.Error("IsReadOnlyResource() on nil assignment = true, want false")
+	}
+}
+
+func TestSkipsLocalDirectoryPathMutex(t *testing.T) {
+	t.Parallel()
+	readInPlace := &localDirectoryAssignment{Ref: localDirectoryRef{Access: localDirectoryAccessRead}}
+	readWorktree := &localDirectoryAssignment{Ref: localDirectoryRef{
+		Access:        localDirectoryAccessRead,
+		ExecutionMode: localDirectoryModeWorktree,
+	}}
+	readLayout := &localDirectoryAssignment{Ref: localDirectoryRef{
+		Access:        localDirectoryAccessRead,
+		ExecutionMode: localDirectoryModeWorkspaceLayout,
+	}}
+	writable := &localDirectoryAssignment{Ref: localDirectoryRef{}}
+
+	cases := []struct {
+		name       string
+		task       Task
+		assignment *localDirectoryAssignment
+		want       bool
+	}{
+		{"chat on writable", Task{ChatSessionID: "sess-1"}, writable, true},
+		{"issue on read in_place", Task{IssueID: "issue-1"}, readInPlace, true},
+		{"issue on writable", Task{IssueID: "issue-1"}, writable, false},
+		{"issue on read worktree", Task{IssueID: "issue-1"}, readWorktree, false},
+		{"issue on read workspace_layout", Task{IssueID: "issue-1"}, readLayout, false},
+		{"nil assignment issue", Task{IssueID: "issue-1"}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := skipsLocalDirectoryPathMutex(tc.task, tc.assignment); got != tc.want {
+				t.Fatalf("skipsLocalDirectoryPathMutex = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReadOnlyInPlaceIssueTasksSkipPathMutex is the analysis-concurrency
+// contract: two issue tasks on one access=read in_place directory must both
+// proceed, keep their assignment, and not become the lock holder.
+func TestReadOnlyInPlaceIssueTasksSkipPathMutex(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-mine"
+	tmp := t.TempDir()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath: tmp,
+		DaemonID:  daemonID,
+		Access:    localDirectoryAccessRead,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+
+	first := Task{ID: "analysis-1", IssueID: "issue-1", ProjectResources: resources}
+	second := Task{ID: "analysis-2", IssueID: "issue-2", ProjectResources: resources}
+
+	assignment, err := localDirectoryAssignmentForTask(first, daemonID)
+	if err != nil {
+		t.Fatalf("assignment: %v", err)
+	}
+	if assignment == nil {
+		t.Fatal("read-only assignment is nil: the analysis run would leave the reference tree")
+	}
+	if assignment.IsolatesWorkingCopy() {
+		t.Fatal("read-only in_place must not be treated as isolated")
+	}
+	if !assignment.IsReadOnlyResource() {
+		t.Fatal("assignment lost access=read")
+	}
+
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID},
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+
+	for _, task := range []Task{first, second} {
+		release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), task, slog.Default())
+		if abort {
+			t.Fatalf("%s: acquisition aborted", task.ID)
+		}
+		if release != nil {
+			t.Fatalf("%s: got a release callback, so the path mutex was taken", task.ID)
+		}
+	}
+	if got := d.localPathLocks.Holder(assignment.RealPath); got != "" {
+		t.Fatalf("holder = %q, want empty: read-only in_place must not lock the path", got)
+	}
+}
+
+// TestReadOnlyDoesNotSkipWorkspaceLayoutDestLock is the negative control for
+// isolated modes: access=read is the bound-directory write contract, not a
+// dest-lock exemption. Two implement tasks that share one issue dest still
+// take turns.
+func TestReadOnlyDoesNotSkipWorkspaceLayoutDestLock(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-mine"
+	tmp := t.TempDir()
+	wsRoot := t.TempDir()
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     tmp,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorkspaceLayout,
+		Access:        localDirectoryAccessRead,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+	first := Task{
+		ID:               "impl-1",
+		WorkspaceID:      "9ff372c4-ae7b-48f8-9433-34539dcdec38",
+		WorkspaceSlug:    "vega-2b6i",
+		IssueID:          "01a0ba16-7cc6-77c8-97ff-81b6076b4f0f",
+		IssueIdentifier:  "VEGA-5",
+		ProjectResources: resources,
+	}
+	second := Task{
+		ID:               "impl-2",
+		WorkspaceID:      first.WorkspaceID,
+		WorkspaceSlug:    first.WorkspaceSlug,
+		IssueID:          first.IssueID,
+		IssueIdentifier:  first.IssueIdentifier,
+		ProjectResources: resources,
+	}
+
+	var waitCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasSuffix(req.URL.Path, "/wait-local-directory") {
+			waitCalls.Add(1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	d := &Daemon{
+		cfg:                Config{DaemonID: daemonID, WorkspacesRoot: wsRoot},
+		client:             NewClient(srv.URL),
+		localPathLocks:     NewLocalPathLocker(),
+		logger:             slog.Default(),
+		cancelPollInterval: time.Hour,
+	}
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), first, slog.Default())
+	if abort || release == nil {
+		t.Fatalf("first layout task failed to take the dest lock (abort=%v)", abort)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	blocked := make(chan struct{})
+	go func() {
+		defer close(blocked)
+		secondRelease, _ := d.acquireLocalDirectoryLockIfNeeded(ctx, second, slog.Default())
+		if secondRelease != nil {
+			secondRelease()
+		}
+	}()
+
+	select {
+	case <-blocked:
+		t.Fatal("second workspace_layout task did not wait for the dest mutex")
+	case <-time.After(200 * time.Millisecond):
+	}
+	cancel()
+	<-blocked
+	if waitCalls.Load() == 0 {
+		t.Error("waiting task never reported waiting_local_directory to the server")
+	}
+}

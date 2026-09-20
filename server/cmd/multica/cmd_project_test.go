@@ -37,6 +37,7 @@ func newProjectResourceUpdateTestCmd() *cobra.Command {
 	c.Flags().String("daemon-id", "", "")
 	c.Flags().String("ref-label", "", "")
 	c.Flags().String("execution-mode", "", "")
+	c.Flags().String("access", "", "")
 	c.Flags().String("ref", "", "")
 	c.Flags().String("label", "", "")
 	c.Flags().Bool("clear-label", false, "")
@@ -382,6 +383,61 @@ func TestBuildResourceRefFromFlagsLocalDirectoryExecutionMode(t *testing.T) {
 		}
 		if _, ok := ref["execution_mode"]; ok {
 			t.Errorf("expected execution_mode cleared, got %v", ref["execution_mode"])
+		}
+	})
+}
+
+func TestBuildResourceRefFromFlagsLocalDirectoryAccess(t *testing.T) {
+	t.Run("sets read access", func(t *testing.T) {
+		cmd := newProjectResourceUpdateTestCmd()
+		_ = cmd.Flags().Set("access", "read")
+		existing := map[string]any{"local_path": "/Users/foo/work/a", "daemon_id": "d1"}
+		ref, has, err := buildResourceRefFromFlags(cmd, "local_directory", existing)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !has {
+			t.Fatal("expected has=true")
+		}
+		if ref["access"] != "read" {
+			t.Errorf("access = %v, want read", ref["access"])
+		}
+	})
+
+	t.Run("unrelated edit preserves existing access", func(t *testing.T) {
+		cmd := newProjectResourceUpdateTestCmd()
+		_ = cmd.Flags().Set("ref-label", "renamed")
+		existing := map[string]any{
+			"local_path": "/Users/foo/work/a",
+			"daemon_id":  "d1",
+			"access":     "read",
+		}
+		ref, _, err := buildResourceRefFromFlags(cmd, "local_directory", existing)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ref["access"] != "read" {
+			t.Errorf("access lost on an unrelated edit: %v", ref["access"])
+		}
+	})
+
+	t.Run("empty value clears back to the writable default", func(t *testing.T) {
+		cmd := newProjectResourceUpdateTestCmd()
+		_ = cmd.Flags().Set("access", "")
+		existing := map[string]any{
+			"local_path": "/Users/foo/work/a",
+			"daemon_id":  "d1",
+			"access":     "read",
+		}
+		ref, has, err := buildResourceRefFromFlags(cmd, "local_directory", existing)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !has {
+			t.Fatal("expected has=true")
+		}
+		if _, ok := ref["access"]; ok {
+			t.Errorf("expected access cleared, got %v", ref["access"])
 		}
 	})
 }

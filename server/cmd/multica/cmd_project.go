@@ -155,6 +155,7 @@ func init() {
 	projectResourceAddCmd.Flags().String("daemon-id", "", "Shortcut: id of the daemon that owns the local path (only used when --type local_directory)")
 	projectResourceAddCmd.Flags().String("ref-label", "", "Shortcut: optional label embedded in resource_ref (only used when --type local_directory)")
 	projectResourceAddCmd.Flags().String("execution-mode", "", "Shortcut: how runs share the directory — in_place (default), worktree (single-repo parallel), or workspace_layout (composite git worktrees + junctions) (only used when --type local_directory)")
+	projectResourceAddCmd.Flags().String("access", "", "Shortcut: write contract for the bound directory — read (shared analysis) or write (exclusive, default) (only used when --type local_directory)")
 	projectResourceAddCmd.Flags().String("ref", "", "Generic JSON resource_ref payload, or a github_repo checkout ref when used with --url")
 	projectResourceAddCmd.Flags().String("label", "", "Optional human-readable label")
 	projectResourceAddCmd.Flags().String("output", "json", "Output format: table or json")
@@ -167,6 +168,7 @@ func init() {
 	projectResourceUpdateCmd.Flags().String("daemon-id", "", "Shortcut: new daemon id (local_directory)")
 	projectResourceUpdateCmd.Flags().String("ref-label", "", "Shortcut: new label embedded in resource_ref (local_directory)")
 	projectResourceUpdateCmd.Flags().String("execution-mode", "", "Shortcut: new execution mode — in_place, worktree, or workspace_layout (local_directory)")
+	projectResourceUpdateCmd.Flags().String("access", "", "Shortcut: write contract for the bound directory — read (shared analysis) or write (exclusive, default) (local_directory)")
 	projectResourceUpdateCmd.Flags().String("ref", "", "Generic JSON resource_ref payload, or a github_repo checkout ref")
 	projectResourceUpdateCmd.Flags().String("label", "", "New human-readable label; pass an empty string to clear")
 	projectResourceUpdateCmd.Flags().Bool("clear-label", false, "Clear the human-readable label")
@@ -612,6 +614,9 @@ func runProjectResourceAdd(cmd *cobra.Command, args []string) error {
 			if mode, _ := cmd.Flags().GetString("execution-mode"); strings.TrimSpace(mode) != "" {
 				ref["execution_mode"] = strings.TrimSpace(mode)
 			}
+			if access, _ := cmd.Flags().GetString("access"); strings.TrimSpace(access) != "" {
+				ref["access"] = strings.TrimSpace(access)
+			}
 			body["resource_ref"] = ref
 		default:
 			return fmt.Errorf("type %q has no built-in CLI shortcut; pass the payload via --ref '<json>'", resourceType)
@@ -729,7 +734,7 @@ func runProjectResourceUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("nothing to update — pass --ref / --url / --local-path / --label / --position / --clear-label")
+		return fmt.Errorf("nothing to update — pass --ref / --url / --local-path / --access / --label / --position / --clear-label")
 	}
 
 	var result map[string]any
@@ -851,7 +856,8 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 		daemonSet := cmd.Flags().Changed("daemon-id")
 		labelSet := cmd.Flags().Changed("ref-label")
 		modeSet := cmd.Flags().Changed("execution-mode")
-		if !pathSet && !daemonSet && !labelSet && !modeSet {
+		accessSet := cmd.Flags().Changed("access")
+		if !pathSet && !daemonSet && !labelSet && !modeSet && !accessSet {
 			return nil, false, nil
 		}
 		ref := map[string]any{}
@@ -867,6 +873,9 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 			}
 			if m, ok := existingRef["execution_mode"].(string); ok && strings.TrimSpace(m) != "" {
 				ref["execution_mode"] = strings.TrimSpace(m)
+			}
+			if a, ok := existingRef["access"].(string); ok && strings.TrimSpace(a) != "" {
+				ref["access"] = strings.TrimSpace(a)
 			}
 		}
 		if pathSet {
@@ -901,6 +910,14 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 				ref["execution_mode"] = mode
 			}
 		}
+		if accessSet {
+			access := strings.TrimSpace(mustString(cmd, "access"))
+			if access == "" {
+				delete(ref, "access")
+			} else {
+				ref["access"] = access
+			}
+		}
 		if v, ok := ref["local_path"].(string); !ok || v == "" {
 			return nil, false, fmt.Errorf("local_directory: --local-path is required (no existing local_path to merge with)")
 		}
@@ -912,7 +929,8 @@ func buildResourceRefFromFlags(cmd *cobra.Command, resourceType string, existing
 		// Unknown type or empty (resource not found) — caller must use --ref.
 		if cmd.Flags().Changed("url") || cmd.Flags().Changed("default-branch-hint") ||
 			cmd.Flags().Changed("local-path") || cmd.Flags().Changed("daemon-id") ||
-			cmd.Flags().Changed("ref-label") || cmd.Flags().Changed("execution-mode") {
+			cmd.Flags().Changed("ref-label") || cmd.Flags().Changed("execution-mode") ||
+			cmd.Flags().Changed("access") {
 			return nil, false, fmt.Errorf("no built-in shortcut for resource type %q; pass the full payload via --ref '<json>'", resourceType)
 		}
 		return nil, false, nil

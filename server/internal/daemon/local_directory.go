@@ -24,9 +24,14 @@ const localDirectoryResourceType = "local_directory"
 // value means in_place, so resources created before worktree mode existed keep
 // their original behavior.
 const (
-	localDirectoryModeInPlace          = "in_place"
-	localDirectoryModeWorktree         = "worktree"
-	localDirectoryModeWorkspaceLayout  = "workspace_layout"
+	localDirectoryModeInPlace         = "in_place"
+	localDirectoryModeWorktree        = "worktree"
+	localDirectoryModeWorkspaceLayout = "workspace_layout"
+
+	// localDirectoryAccessRead marks the bound directory as read-only for
+	// this resource. in_place tasks then skip the per-path mutex (same
+	// carve-out as chat): they are not a second heavyweight writer.
+	localDirectoryAccessRead = "read"
 )
 
 // localDirectoryRef mirrors the server-side ref shape for local_directory
@@ -37,6 +42,7 @@ type localDirectoryRef struct {
 	DaemonID      string `json:"daemon_id"`
 	Label         string `json:"label,omitempty"`
 	ExecutionMode string `json:"execution_mode,omitempty"`
+	Access        string `json:"access,omitempty"`
 }
 
 // localDirectoryAssignment is the resolved view of a task's local_directory
@@ -71,6 +77,12 @@ func (a *localDirectoryAssignment) UsesWorkspaceLayout() bool {
 // local_path in place. Both worktree and workspace_layout qualify.
 func (a *localDirectoryAssignment) IsolatesWorkingCopy() bool {
 	return a.UsesWorktree() || a.UsesWorkspaceLayout()
+}
+
+// IsReadOnlyResource is true when the project resource forbids writing the
+// bound local_path. Isolated checkouts still take dest/worktree locks.
+func (a *localDirectoryAssignment) IsReadOnlyResource() bool {
+	return a != nil && strings.EqualFold(strings.TrimSpace(a.Ref.Access), localDirectoryAccessRead)
 }
 
 // DisplayName is the human-facing name for this directory, safe to render in
@@ -128,8 +140,8 @@ func (a *localDirectoryAssignment) ValidateExecutionMode() error {
 // execenv.PrepareParams.LocalWorkDir) and the GC-meta stamp that exempts a
 // user-owned path from env-root cleanup. Whether the task additionally takes
 // the per-path mutex is a SEPARATE question, answered by
-// localDirectoryLockExempt — collapsing the two is what made a read-only chat
-// turn queue behind a 20-minute build (issue #7344), and answering "no
+// skipsLocalDirectoryPathMutex — collapsing the two is what made a read-only
+// chat turn queue behind a 20-minute build (issue #7344), and answering "no
 // assignment" there to free the lock would have silently moved chat out of the
 // user's directory as well.
 func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirectoryAssignment, error) {
@@ -164,6 +176,16 @@ func localDirectoryAssignmentForTask(task Task, daemonID string) (*localDirector
 // turn ever dispatched.
 func localDirectoryLockExempt(task Task) bool {
 	return task.ChatSessionID != ""
+}
+
+// skipsLocalDirectoryPathMutex is the in_place lock carve-out: chat turns
+// (issue #7344) and resources marked access=read. Isolated modes never use
+// this — they take dest/worktree locks instead of the reference-path mutex.
+func skipsLocalDirectoryPathMutex(task Task, assignment *localDirectoryAssignment) bool {
+	if localDirectoryLockExempt(task) {
+		return true
+	}
+	return assignment != nil && assignment.IsReadOnlyResource() && !assignment.IsolatesWorkingCopy()
 }
 
 // findLocalDirectoryAssignment scans the task's project resources for one of

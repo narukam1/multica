@@ -63,7 +63,7 @@ export interface ListProjectsResponse {
 // Known types (UI must default-case unknown server-side additions):
 //   - github_repo: cloud-side git checkout, ref = { url, ref?, default_branch_hint? }
 //   - local_directory: agent execution on a specific daemon,
-//     ref = { local_path, daemon_id, label?, execution_mode? }
+//     ref = { local_path, daemon_id, label?, execution_mode?, access? }
 export type ProjectResourceType = "github_repo" | "local_directory";
 
 export interface GithubRepoResourceRef {
@@ -75,9 +75,10 @@ export interface GithubRepoResourceRef {
 /**
  * How tasks sharing one local directory are executed.
  *
- * - `in_place`: the agent works directly in the user's directory and tasks run
- *   one at a time — a second task waits in `waiting_local_directory`. Edits
- *   land in the user's working copy.
+ * - `in_place`: the agent works directly in the user's directory. Writable
+ *   resources still serialise — a second task waits in
+ *   `waiting_local_directory`. `access: "read"` skips that mutex so analysis
+ *   runs may share the tree. Edits land in the user's working copy.
  * - `worktree`: each task gets its own git worktree of that repo inside the
  *   runtime's workspace, so tasks run concurrently and deliver their work as a
  *   branch instead of touching the working copy. Every task of one conversation
@@ -96,11 +97,18 @@ export interface GithubRepoResourceRef {
  */
 export type LocalDirectoryExecutionMode = "in_place" | "worktree" | "workspace_layout";
 
+/**
+ * Write contract for the bound directory itself, not the agent process.
+ * Absent/`write` keeps the exclusive in_place lock. Isolated modes ignore it.
+ */
+export type LocalDirectoryAccess = "read" | "write";
+
 export interface LocalDirectoryResourceRef {
   local_path: string;
   daemon_id: string;
   label?: string;
   execution_mode?: LocalDirectoryExecutionMode;
+  access?: LocalDirectoryAccess;
 }
 
 export type ProjectResourceRef =

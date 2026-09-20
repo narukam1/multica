@@ -129,6 +129,9 @@ const (
 	// localDirectoryModeWorkspaceLayout materialises a composite workspace
 	// from workspace-layout.yaml. Requires LocalWorkspaceLayoutV1.
 	localDirectoryModeWorkspaceLayout = "workspace_layout"
+
+	localDirectoryAccessRead  = "read"
+	localDirectoryAccessWrite = "write"
 )
 
 // localDirectoryRef is the JSONB shape stored for resource_type=local_directory.
@@ -146,6 +149,10 @@ type localDirectoryRef struct {
 	DaemonID      string `json:"daemon_id"`
 	Label         string `json:"label,omitempty"`
 	ExecutionMode string `json:"execution_mode,omitempty"`
+	// Access is the write contract for the bound directory itself, not the
+	// agent process. "read" means analysis may share the tree; absent/"write"
+	// keeps the historical exclusive in_place lock. Isolated modes ignore it.
+	Access string `json:"access,omitempty"`
 }
 
 // requireWorktreeCapableDaemon rejects saving a local_directory ref that asks
@@ -311,6 +318,13 @@ func validateLocalDirectoryRef(ref json.RawMessage) (json.RawMessage, error) {
 	default:
 		return nil, fmt.Errorf("local_directory: execution_mode must be %q, %q, or %q, got %q",
 			localDirectoryModeInPlace, localDirectoryModeWorktree, localDirectoryModeWorkspaceLayout, payload.ExecutionMode)
+	}
+	payload.Access = strings.TrimSpace(payload.Access)
+	switch payload.Access {
+	case "", localDirectoryAccessRead, localDirectoryAccessWrite:
+	default:
+		return nil, fmt.Errorf("local_directory: access must be %q or %q, got %q",
+			localDirectoryAccessRead, localDirectoryAccessWrite, payload.Access)
 	}
 	out, err := json.Marshal(payload)
 	if err != nil {

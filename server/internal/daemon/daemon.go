@@ -6111,8 +6111,12 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 		taskLog.Info("local_directory: isolated mode, skipping path mutex",
 			"execution_mode", assignment.Ref.ExecutionMode)
 		return nil, false
-	} else if localDirectoryLockExempt(task) {
-		taskLog.Info("local_directory: chat task, skipping path mutex")
+	} else if skipsLocalDirectoryPathMutex(task, assignment) {
+		if localDirectoryLockExempt(task) {
+			taskLog.Info("local_directory: chat task, skipping path mutex")
+		} else {
+			taskLog.Info("local_directory: read-only resource, skipping path mutex")
+		}
 		return nil, false
 	}
 
@@ -8458,7 +8462,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
 	var promptOptions []PromptOption
-	if localAssignment != nil && !localAssignment.IsolatesWorkingCopy() && localDirectoryLockExempt(task) {
+	if localAssignment != nil && !localAssignment.IsolatesWorkingCopy() && skipsLocalDirectoryPathMutex(task, localAssignment) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
 	// Worktree mode hands this turn a tree that is mid-merge when the user's
