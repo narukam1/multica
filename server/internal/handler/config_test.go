@@ -535,6 +535,12 @@ func TestGetConfigDeclaresLocalWorktreeSupport(t *testing.T) {
 	if _, ok := raw["local_workspace_layout_supported"]; !ok {
 		t.Fatal("local_workspace_layout_supported missing from the JSON body")
 	}
+	if !cfg.LocalDirectoryAccessSupported {
+		t.Fatal("this build persists local_directory access but does not advertise it; clients will hide shared analysis")
+	}
+	if _, ok := raw["local_directory_access_supported"]; !ok {
+		t.Fatal("local_directory_access_supported missing from the JSON body")
+	}
 }
 
 // Web/Desktop can run ahead of a manually deployed backend. Handlers that

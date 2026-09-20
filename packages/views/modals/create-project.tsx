@@ -72,8 +72,11 @@ import {
   runtimeListOptions,
 } from "@multica/core/runtimes";
 import { useConfigStore } from "@multica/core/config";
-import type { LocalDirectoryExecutionMode } from "@multica/core/types";
-import { LocalDirectoryModeOptions } from "../projects/components/local-directory-mode-dialog";
+import type { LocalDirectoryAccess, LocalDirectoryExecutionMode } from "@multica/core/types";
+import {
+  LocalDirectoryModeOptions,
+  accessForLocalDirectoryRef,
+} from "../projects/components/local-directory-mode-dialog";
 
 /**
  * Builds the resource_ref for a local directory attached during project
@@ -89,17 +92,23 @@ export function buildLocalDirectoryResourceRef({
   daemonId,
   label,
   mode,
+  access,
 }: {
   localPath: string;
   daemonId: string;
   label: string | null;
   mode: LocalDirectoryExecutionMode;
+  access?: LocalDirectoryAccess;
 }): Record<string, unknown> {
+  const persistedAccess = access
+    ? accessForLocalDirectoryRef(mode, access)
+    : undefined;
   return {
     local_path: localPath,
     daemon_id: daemonId,
     ...(label ? { label } : {}),
     execution_mode: mode,
+    ...(persistedAccess ? { access: persistedAccess } : {}),
   };
 }
 
@@ -196,6 +205,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   // in_place. Only then does the folder-derived preselection apply, so an
   // explicit choice is never overridden by a later folder change.
   const [localMode, setLocalMode] = useState<LocalDirectoryExecutionMode | null>(null);
+  const [localAccess, setLocalAccess] = useState<LocalDirectoryAccess>("write");
   // undefined = could not check (older desktop build); the daemon re-checks
   // authoritatively, so unknown stays permissive.
   const [localIsGitRepo, setLocalIsGitRepo] = useState<boolean | undefined>(undefined);
@@ -223,6 +233,9 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
   const serverValidatesWorktree = useConfigStore((state) => state.localWorktreeSupported);
   const serverValidatesLayout = useConfigStore(
     (state) => state.localWorkspaceLayoutSupported,
+  );
+  const serverPersistsAccess = useConfigStore(
+    (state) => state.localDirectoryAccessSupported,
   );
   const worktreeUnavailableReason =
     localIsGitRepo === false
@@ -302,6 +315,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
     setLocalPickError(null);
     setLocalIsGitRepo(undefined);
     setLocalMode(null);
+    setLocalAccess("write");
   };
 
   // Sync field changes to draft store
@@ -356,6 +370,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
             daemonId: daemonStatus.daemonId,
             label: selectedLocalLabel,
             mode: effectiveLocalMode,
+            access: serverPersistsAccess ? localAccess : undefined,
           }),
         },
       ];
@@ -906,7 +921,9 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                                     ? tProjects(($) => $.resources.mode_badge_worktree)
                                     : effectiveLocalMode === "workspace_layout"
                                       ? tProjects(($) => $.resources.mode_badge_workspace_layout)
-                                      : tProjects(($) => $.resources.mode_badge_in_place)}
+                                      : localAccess === "read"
+                                        ? tProjects(($) => $.resources.mode_badge_shared)
+                                        : tProjects(($) => $.resources.mode_badge_in_place)}
                                 </span>
                               </Button>
                             }
@@ -916,10 +933,18 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                               value={effectiveLocalMode}
                               onChange={(mode) => {
                                 setLocalMode(mode);
+                                if (mode !== "in_place") setLocalModeOpen(false);
+                              }}
+                              access={localAccess}
+                              onAccessChange={(next) => {
+                                setLocalAccess(next);
                                 setLocalModeOpen(false);
                               }}
                               unavailableReason={worktreeUnavailableReason}
                               layoutUnavailableReason={layoutUnavailableReason}
+                              accessUnavailableReason={
+                                serverPersistsAccess ? undefined : "server_outdated"
+                              }
                             />
                           </PopoverContent>
                         </Popover>

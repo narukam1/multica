@@ -36,6 +36,9 @@ interface ConfigState {
   // Defaults to false: servers that only know in_place/worktree must not be
   // offered the composite-tree option.
   localWorkspaceLayoutSupported: boolean;
+  // Whether the connected server persists local_directory `access`.
+  // Defaults to false: older servers drop the unknown key on save.
+  localDirectoryAccessSupported: boolean;
   // Whether this server persists conversation_starters on agent create/update.
   // Older handlers accepted the unknown field and returned success while
   // dropping it, so absent must fail closed.
@@ -59,6 +62,7 @@ interface ConfigState {
   setServerVersion: (version?: string) => void;
   setLocalWorktreeSupported: (supported?: boolean) => void;
   setLocalWorkspaceLayoutSupported: (supported?: boolean) => void;
+  setLocalDirectoryAccessSupported: (supported?: boolean) => void;
   setAgentConversationStartersSupported: (supported?: boolean) => void;
   setCommentDeleteKeepRepliesSupported: (supported?: boolean) => void;
 }
@@ -76,6 +80,7 @@ export const configStore = createStore<ConfigState>((set) => ({
   serverVersion: "",
   localWorktreeSupported: false,
   localWorkspaceLayoutSupported: false,
+  localDirectoryAccessSupported: false,
   agentConversationStartersSupported: false,
   commentDeleteKeepRepliesSupported: false,
   setCdnConfig: ({ cdnDomain, cdnSigned = false }) => set({ cdnDomain, cdnSigned }),
@@ -93,6 +98,8 @@ export const configStore = createStore<ConfigState>((set) => ({
     set({ localWorktreeSupported: supported === true }),
   setLocalWorkspaceLayoutSupported: (supported = false) =>
     set({ localWorkspaceLayoutSupported: supported === true }),
+  setLocalDirectoryAccessSupported: (supported = false) =>
+    set({ localDirectoryAccessSupported: supported === true }),
   setAgentConversationStartersSupported: (supported = false) =>
     set({ agentConversationStartersSupported: supported === true }),
   setCommentDeleteKeepRepliesSupported: (supported = false) =>

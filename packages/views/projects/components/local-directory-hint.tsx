@@ -67,6 +67,7 @@ export function LocalDirectoryHint({
         // isolation mode and gets its own copy.
         const mode = ref.execution_mode;
         const isolated = mode === "worktree" || mode === "workspace_layout";
+        const shared = !isolated && ref.access === "read";
         return (
           <div key={resource.id} className="space-y-0.5">
             <div className="flex items-center gap-2">
@@ -95,6 +96,11 @@ export function LocalDirectoryHint({
             {mode === "worktree" && (
               <div className="pl-5 opacity-80">
                 {t(($) => $.resources.chat_hint_worktree_note)}
+              </div>
+            )}
+            {shared && (
+              <div className="pl-5 opacity-80">
+                {t(($) => $.resources.chat_hint_shared_note)}
               </div>
             )}
           </div>

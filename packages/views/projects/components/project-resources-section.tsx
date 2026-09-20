@@ -10,6 +10,7 @@ import {
   Layers,
   Pencil,
   Plus,
+  Users,
   Search,
   Trash2,
 } from "lucide-react";
@@ -24,6 +25,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import type {
   GithubRepoResourceRef,
+  LocalDirectoryAccess,
   LocalDirectoryExecutionMode,
   LocalDirectoryResourceRef,
   ProjectResource,
@@ -55,6 +57,8 @@ import {
 } from "../../platform";
 import {
   LocalDirectoryModeDialog,
+  accessForLocalDirectoryRef,
+  directoryAccessOf,
   type WorktreeUnavailableReason,
 } from "./local-directory-mode-dialog";
 import { localDirectoryLabel } from "./local-directory-label";
@@ -98,6 +102,7 @@ type ModeDialogState = {
   path: string;
   daemonId: string | null;
   mode: LocalDirectoryExecutionMode;
+  access: LocalDirectoryAccess;
   /** undefined = unknown (older desktop build); treated as "cannot verify". */
   isGitRepo: boolean | undefined;
   /** Set for an edit; absent when adding a new resource. */
@@ -145,6 +150,9 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
   const serverValidatesWorktree = useConfigStore((state) => state.localWorktreeSupported);
   const serverValidatesLayout = useConfigStore(
     (state) => state.localWorkspaceLayoutSupported,
+  );
+  const serverPersistsAccess = useConfigStore(
+    (state) => state.localDirectoryAccessSupported,
   );
   // Keyed on the resource's OWN daemon, not the machine the browser happens to
   // be on: a resource is pinned to one machine, and its mode can legitimately
@@ -256,6 +264,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
             ? "worktree"
             : "in_place",
         isGitRepo: validation.is_git_repo,
+        access: "write",
         label: fallbackLabel,
       });
       setAddOpen(false);
@@ -270,23 +279,40 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
     }
   };
 
-  const handleConfirmMode = async (mode: LocalDirectoryExecutionMode) => {
+  const handleConfirmMode = async ({
+    mode,
+    access,
+  }: {
+    mode: LocalDirectoryExecutionMode;
+    access: LocalDirectoryAccess;
+  }) => {
     if (!modeDialog || modeSaving) return;
     setModeSaving(true);
     setModeError(null);
+    const persistedAccess = serverPersistsAccess
+      ? accessForLocalDirectoryRef(mode, access)
+      : undefined;
     try {
       if (modeDialog.resource) {
         const ref = modeDialog.resource.resource_ref;
-        if (executionModeOf(ref) === mode) {
+        const sameMode = executionModeOf(ref) === mode;
+        const sameAccess = directoryAccessOf(ref.access) === (persistedAccess ?? "write");
+        if (sameMode && sameAccess) {
           setModeDialog(null);
           return;
         }
+        const nextRef: LocalDirectoryResourceRef = {
+          ...ref,
+          execution_mode: mode,
+        };
+        if (persistedAccess) nextRef.access = persistedAccess;
+        else delete nextRef.access;
         await updateResource.mutateAsync({
           resourceId: modeDialog.resource.id,
           data: {
             // Spread first so every other ref field survives the edit — the
             // server replaces the whole ref, it does not deep-merge.
-            resource_ref: { ...ref, execution_mode: mode },
+            resource_ref: nextRef,
           },
         });
         toast.success(t(($) => $.resources.toast_local_mode_updated));
@@ -299,6 +325,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
             daemon_id: localDaemonId,
             label: modeDialog.label ?? modeDialog.path,
             execution_mode: mode,
+            ...(persistedAccess ? { access: persistedAccess } : {}),
           },
         });
         toast.success(t(($) => $.resources.toast_local_attached));
@@ -397,6 +424,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
                       path: target.resource_ref.local_path,
                       daemonId: target.resource_ref.daemon_id,
                       mode: executionModeOf(target.resource_ref),
+                      access: directoryAccessOf(target.resource_ref.access),
                       // The path is already saved, so there is nothing to
                       // re-validate from the browser; the desktop check only
                       // runs at pick time. Unknown means the option stays
@@ -541,6 +569,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
           }}
           path={modeDialog.path}
           value={modeDialog.mode}
+          access={modeDialog.access}
           unavailableReason={worktreeUnavailableReason(
             modeDialog.isGitRepo,
             serverValidatesWorktree,
@@ -549,6 +578,9 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
             modeDialog.isGitRepo,
             serverValidatesLayout,
           )}
+          accessUnavailableReason={
+            serverPersistsAccess ? undefined : "server_outdated"
+          }
           errorMessage={modeError ?? undefined}
           saving={modeSaving}
           confirmLabel={
@@ -556,7 +588,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
               ? t(($) => $.resources.mode_save)
               : t(($) => $.resources.mode_add)
           }
-          onConfirm={(mode) => void handleConfirmMode(mode)}
+          onConfirm={(choice) => void handleConfirmMode(choice)}
         />
       )}
     </div>
@@ -801,6 +833,21 @@ function LocalDirectoryRow({
           />
           <TooltipContent side="top">
             {t(($) => $.resources.mode_badge_workspace_layout_tooltip)}
+          </TooltipContent>
+        </Tooltip>
+      )}
+      {mode === "in_place" && directoryAccessOf(ref.access) === "read" && !editing && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Badge variant="secondary" className="shrink-0 gap-1 font-normal">
+                <Users className="size-3" />
+                {t(($) => $.resources.mode_badge_shared)}
+              </Badge>
+            }
+          />
+          <TooltipContent side="top">
+            {t(($) => $.resources.mode_badge_shared_tooltip)}
           </TooltipContent>
         </Tooltip>
       )}

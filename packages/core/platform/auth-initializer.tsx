@@ -91,6 +91,11 @@ export function AuthInitializer({
           .setLocalWorkspaceLayoutSupported(
             cfg.local_workspace_layout_supported === true,
           );
+        configStore
+          .getState()
+          .setLocalDirectoryAccessSupported(
+            cfg.local_directory_access_supported === true,
+          );
         // Older agent handlers returned success while silently dropping this
         // additive field, so writes stay disabled unless the server declares
         // the persistence contract explicitly.

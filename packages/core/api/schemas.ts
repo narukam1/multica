@@ -757,6 +757,10 @@ export interface AppConfigResponse {
    * gates it at save time. Absent on every server that predates the mode,
    * including ones that already declare local_worktree_supported. */
   local_workspace_layout_supported?: boolean;
+  /** Whether this server persists local_directory `access`. Absent on every
+   * server that predates the field, including ones that already declare
+   * worktree/layout support — those drop the unknown key on save. */
+  local_directory_access_supported?: boolean;
   /** Whether agent create/update persists `conversation_starters`. Older servers
    * silently ignored the unknown field, so absent must be treated as false. */
   agent_conversation_starters_supported?: boolean;
@@ -1002,6 +1006,7 @@ export const AppConfigSchema = z.object({
   feature_flags: FeatureFlagsSchema,
   local_worktree_supported: BooleanWithDefaultSchema(false),
   local_workspace_layout_supported: BooleanWithDefaultSchema(false),
+  local_directory_access_supported: BooleanWithDefaultSchema(false),
   agent_conversation_starters_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
@@ -1020,6 +1025,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   // valiates execution_mode.
   local_worktree_supported: false,
   local_workspace_layout_supported: false,
+  local_directory_access_supported: false,
   // Fail closed: old servers returned success while dropping the field.
   agent_conversation_starters_supported: false,
   // Fail closed: old servers delete a comment's replies with it.

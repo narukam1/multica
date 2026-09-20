@@ -50,6 +50,7 @@ function makeLocalDirectoryResource(overrides: {
   local_path: string;
   label?: string;
   execution_mode?: string;
+  access?: string;
 }): ProjectResource {
   return {
     id: `res-${overrides.local_path}`,
@@ -63,6 +64,7 @@ function makeLocalDirectoryResource(overrides: {
       ...(overrides.execution_mode
         ? { execution_mode: overrides.execution_mode }
         : {}),
+      ...(overrides.access ? { access: overrides.access } : {}),
     },
     label: null,
     position: 0,
@@ -190,6 +192,27 @@ describe("LocalDirectoryHint", () => {
       expect(screen.getByText(/in-place/i)).toBeInTheDocument();
     });
     expect(screen.queryByText(/isolated worktree/i)).not.toBeInTheDocument();
+  });
+
+  it("notes when in_place analysis may overlap", async () => {
+    mockDaemonStatus.daemonId = "daemon-A";
+    mockDaemonStatus.running = true;
+    mockListResources.mockResolvedValue({
+      resources: [
+        makeLocalDirectoryResource({
+          daemon_id: "daemon-A",
+          local_path: "/Users/foo/srm-all",
+          label: "srm-all",
+          execution_mode: "in_place",
+          access: "read",
+        }),
+      ],
+      total: 1,
+    });
+    renderHint("proj-1");
+    await waitFor(() => {
+      expect(screen.getByText(/may overlap/i)).toBeInTheDocument();
+    });
   });
 
   // Absent (pre-mode resources) and anything a newer server might send both

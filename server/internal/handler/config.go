@@ -83,6 +83,13 @@ type AppConfig struct {
 	// option rather than offer a mode the save would 422, or worse drop.
 	LocalWorkspaceLayoutSupported bool `json:"local_workspace_layout_supported"`
 
+	// LocalDirectoryAccessSupported tells clients this server understands
+	// local_directory `access` and persists it on save. Absent on every
+	// server that predates the field — those drop the unknown key and
+	// answer 200 — so clients must fail closed and hide the shared-analysis
+	// option rather than offer a setting the save would silently discard.
+	LocalDirectoryAccessSupported bool `json:"local_directory_access_supported"`
+
 	// AgentConversationStartersSupported tells independently deployed clients
 	// that agent create/update persists conversation_starters. Older handlers
 	// ignored the unknown JSON field and still returned success, so clients
@@ -114,6 +121,7 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		// running, the save gate is running with it.
 		LocalWorktreeSupported:             true,
 		LocalWorkspaceLayoutSupported:      true,
+		LocalDirectoryAccessSupported:      true,
 		AgentConversationStartersSupported: true,
 		CommentDeleteKeepRepliesSupported:  true,
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",

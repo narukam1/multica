@@ -96,11 +96,13 @@ vi.mock("@multica/core/config", () => ({
     selector: (state: {
       localWorktreeSupported: boolean;
       localWorkspaceLayoutSupported: boolean;
+      localDirectoryAccessSupported: boolean;
     }) => unknown,
   ) =>
     selector({
       localWorktreeSupported: serverValidatesWorktree,
       localWorkspaceLayoutSupported: serverValidatesLayout,
+      localDirectoryAccessSupported: true,
     }),
 }));
 
@@ -304,7 +306,7 @@ describe("CreateProjectModal — local directory execution mode", () => {
     await pickLocalDirectory(user);
 
     expect(screen.getByRole("radio", { name: /Run in parallel, isolated/i })).toBeDisabled();
-    expect(screen.getByText(/Multica server is too old/i)).toBeInTheDocument();
+    expect(screen.getByText(/too old to execute runs in parallel/i)).toBeInTheDocument();
     // And it must not have been preselected either — that would submit a mode
     // the server would silently downgrade.
     expect(screen.getByRole("button", { name: /^Direct$/i })).toBeInTheDocument();
@@ -318,7 +320,7 @@ describe("CreateProjectModal — local directory execution mode", () => {
     await pickLocalDirectory(user);
 
     expect(screen.getByRole("radio", { name: /Run in parallel, isolated/i })).toBeDisabled();
-    expect(screen.getByText(/not a git repository/i)).toBeInTheDocument();
+    expect(screen.getByText(/nowhere to put the branch/i)).toBeInTheDocument();
   });
 
   it("offers composite-tree mode when the server declares it", async () => {
@@ -393,5 +395,31 @@ describe("buildLocalDirectoryResourceRef", () => {
       label: "srm-all",
       execution_mode: "workspace_layout",
     });
+  });
+
+  it("stores access=read only for in_place", () => {
+    expect(
+      buildLocalDirectoryResourceRef({
+        localPath: "/Users/dev/srm-all",
+        daemonId: "d",
+        label: null,
+        mode: "in_place",
+        access: "read",
+      }),
+    ).toEqual({
+      local_path: "/Users/dev/srm-all",
+      daemon_id: "d",
+      execution_mode: "in_place",
+      access: "read",
+    });
+    expect(
+      buildLocalDirectoryResourceRef({
+        localPath: "/Users/dev/srm-all",
+        daemonId: "d",
+        label: null,
+        mode: "workspace_layout",
+        access: "read",
+      }).access,
+    ).toBeUndefined();
   });
 });

@@ -3,7 +3,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { LocalDirectoryExecutionMode } from "@multica/core/types";
+import type { LocalDirectoryAccess, LocalDirectoryExecutionMode } from "@multica/core/types";
 import enProjects from "../../locales/en/projects.json";
 import enCommon from "../../locales/en/common.json";
 import { LocalDirectoryModeDialog } from "./local-directory-mode-dialog";
@@ -14,10 +14,15 @@ const TEST_RESOURCES = { en: { projects: enProjects, common: enCommon } };
 function renderDialog(
   overrides: {
     value?: LocalDirectoryExecutionMode;
+    access?: LocalDirectoryAccess;
     unavailableReason?: WorktreeUnavailableReason;
     layoutUnavailableReason?: WorktreeUnavailableReason;
+    accessUnavailableReason?: "server_outdated";
     errorMessage?: string;
-    onConfirm?: (mode: LocalDirectoryExecutionMode) => void;
+    onConfirm?: (choice: {
+      mode: LocalDirectoryExecutionMode;
+      access: LocalDirectoryAccess;
+    }) => void;
   } = {},
 ) {
   const onConfirm = overrides.onConfirm ?? vi.fn();
@@ -28,8 +33,10 @@ function renderDialog(
         onOpenChange={() => {}}
         path="/Users/dev/work/game-client"
         value={overrides.value ?? "in_place"}
+        access={overrides.access}
         unavailableReason={overrides.unavailableReason}
         layoutUnavailableReason={overrides.layoutUnavailableReason}
+        accessUnavailableReason={overrides.accessUnavailableReason}
         errorMessage={overrides.errorMessage}
         confirmLabel="Save"
         onConfirm={onConfirm}
@@ -64,7 +71,7 @@ describe("LocalDirectoryModeDialog", () => {
     fireEvent.click(worktreeOption());
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onConfirm).toHaveBeenCalledWith("worktree");
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "worktree", access: "write" });
   });
 
   // A non-git folder cannot produce a branch, so offering the option would
@@ -80,7 +87,7 @@ describe("LocalDirectoryModeDialog", () => {
     fireEvent.click(option);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     // Still the mode it opened with — the disabled option cannot be selected.
-    expect(onConfirm).toHaveBeenCalledWith("in_place");
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "in_place", access: "write" });
   });
 
   // A server older than the worktree save gate does not reject the mode — it
@@ -98,7 +105,7 @@ describe("LocalDirectoryModeDialog", () => {
 
     fireEvent.click(option);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onConfirm).toHaveBeenCalledWith("in_place");
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "in_place", access: "write" });
   });
 
   // The client no longer predicts whether the machine can run the mode — the
@@ -120,7 +127,10 @@ describe("LocalDirectoryModeDialog", () => {
     fireEvent.click(layoutOption());
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onConfirm).toHaveBeenCalledWith("workspace_layout");
+    expect(onConfirm).toHaveBeenCalledWith({
+      mode: "workspace_layout",
+      access: "write",
+    });
   });
 
   it("disables composite-tree mode when the server cannot honour it", () => {
@@ -136,7 +146,7 @@ describe("LocalDirectoryModeDialog", () => {
 
     fireEvent.click(option);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(onConfirm).toHaveBeenCalledWith("in_place");
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "in_place", access: "write" });
   });
 
   it("leaves parallel mode selectable for a git folder, whatever the runtime says", () => {
@@ -148,6 +158,40 @@ describe("LocalDirectoryModeDialog", () => {
     fireEvent.click(option);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    expect(onConfirm).toHaveBeenCalledWith("worktree");
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "worktree", access: "write" });
+  });
+
+  it("shows shared analysis only for in_place and confirms the pick", () => {
+    const onConfirm = vi.fn();
+    renderDialog({ value: "in_place", onConfirm });
+
+    expect(screen.getByText("Shared analysis")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: /Shared analysis/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "in_place", access: "read" });
+  });
+
+  it("hides shared analysis when the folder is isolated", () => {
+    renderDialog({ value: "workspace_layout" });
+    expect(screen.queryByText("Shared analysis")).toBeNull();
+    expect(screen.getAllByRole("radio")).toHaveLength(3);
+  });
+
+  it("blocks shared analysis when the server cannot persist access", () => {
+    const onConfirm = vi.fn();
+    renderDialog({
+      value: "in_place",
+      accessUnavailableReason: "server_outdated",
+      onConfirm,
+    });
+
+    const shared = screen.getByRole("radio", { name: /Shared analysis/i });
+    expect(shared.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/too old to keep this setting/i)).toBeTruthy();
+
+    fireEvent.click(shared);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(onConfirm).toHaveBeenCalledWith({ mode: "in_place", access: "write" });
   });
 });

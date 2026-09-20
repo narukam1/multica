@@ -49,11 +49,13 @@ vi.mock("@multica/core/config", () => ({
     selector: (state: {
       localWorktreeSupported: boolean;
       localWorkspaceLayoutSupported: boolean;
+      localDirectoryAccessSupported: boolean;
     }) => unknown,
   ) =>
     selector({
       localWorktreeSupported: false,
       localWorkspaceLayoutSupported: false,
+      localDirectoryAccessSupported: false,
     }),
 }));
 

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { GitBranch, Layers, Pencil, TriangleAlert } from "lucide-react";
-import type { LocalDirectoryExecutionMode } from "@multica/core/types";
+import { GitBranch, Layers, Lock, Pencil, TriangleAlert, Users } from "lucide-react";
+import type { LocalDirectoryAccess, LocalDirectoryExecutionMode } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Dialog,
@@ -33,6 +33,22 @@ import { useT } from "../../i18n/use-t";
  */
 export type ModeUnavailableReason = "not_git" | "server_outdated";
 export type WorktreeUnavailableReason = ModeUnavailableReason;
+export type AccessUnavailableReason = "server_outdated";
+
+export function directoryAccessOf(
+  access: string | undefined | null,
+): LocalDirectoryAccess {
+  return access === "read" ? "read" : "write";
+}
+
+/** Only in_place + read is stored. Isolated modes and exclusive writes omit it. */
+export function accessForLocalDirectoryRef(
+  mode: LocalDirectoryExecutionMode,
+  access: LocalDirectoryAccess,
+): LocalDirectoryAccess | undefined {
+  if (mode !== "in_place") return undefined;
+  return access === "read" ? "read" : undefined;
+}
 
 interface LocalDirectoryModeDialogProps {
   open: boolean;
@@ -41,16 +57,23 @@ interface LocalDirectoryModeDialogProps {
   path: string;
   /** Mode to preselect — the current mode when editing, in_place when adding. */
   value: LocalDirectoryExecutionMode;
+  /** Access to preselect — write when adding or when the stored ref omits it. */
+  access?: LocalDirectoryAccess;
   /** Set when worktree cannot be chosen; the option renders disabled with a reason. */
   unavailableReason?: ModeUnavailableReason;
   /** Set when workspace_layout cannot be chosen. */
   layoutUnavailableReason?: ModeUnavailableReason;
+  /** Set when access=read cannot be persisted; exclusive writes stay available. */
+  accessUnavailableReason?: AccessUnavailableReason;
   /** Server-side rejection to show inline (e.g. a 422 that only the API can detect). */
   errorMessage?: string;
   saving?: boolean;
   /** Confirm label differs between adding a resource and editing one. */
   confirmLabel: string;
-  onConfirm: (mode: LocalDirectoryExecutionMode) => void;
+  onConfirm: (choice: {
+    mode: LocalDirectoryExecutionMode;
+    access: LocalDirectoryAccess;
+  }) => void;
 }
 
 /**
@@ -68,8 +91,10 @@ export function LocalDirectoryModeDialog({
   onOpenChange,
   path,
   value,
+  access = "write",
   unavailableReason,
   layoutUnavailableReason,
+  accessUnavailableReason,
   errorMessage,
   saving = false,
   confirmLabel,
@@ -77,12 +102,16 @@ export function LocalDirectoryModeDialog({
 }: LocalDirectoryModeDialogProps) {
   const { t } = useT("projects");
   const [selected, setSelected] = useState<LocalDirectoryExecutionMode>(value);
+  const [selectedAccess, setSelectedAccess] = useState<LocalDirectoryAccess>(access);
 
   // Re-sync when the dialog is reopened for a different resource, otherwise the
   // previous row's mode would be preselected for this one.
   useEffect(() => {
-    if (open) setSelected(value);
-  }, [open, value]);
+    if (open) {
+      setSelected(value);
+      setSelectedAccess(access);
+    }
+  }, [open, value, access]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -101,8 +130,11 @@ export function LocalDirectoryModeDialog({
         <LocalDirectoryModeOptions
           value={selected}
           onChange={setSelected}
+          access={selectedAccess}
+          onAccessChange={setSelectedAccess}
           unavailableReason={unavailableReason}
           layoutUnavailableReason={layoutUnavailableReason}
+          accessUnavailableReason={accessUnavailableReason}
         />
 
         {errorMessage && (
@@ -120,7 +152,10 @@ export function LocalDirectoryModeDialog({
           >
             {t(($) => $.resources.mode_cancel)}
           </Button>
-          <Button onClick={() => onConfirm(selected)} disabled={saving}>
+          <Button
+            onClick={() => onConfirm({ mode: selected, access: selectedAccess })}
+            disabled={saving}
+          >
             {confirmLabel}
           </Button>
         </DialogFooter>
@@ -132,8 +167,11 @@ export function LocalDirectoryModeDialog({
 interface LocalDirectoryModeOptionsProps {
   value: LocalDirectoryExecutionMode;
   onChange: (mode: LocalDirectoryExecutionMode) => void;
+  access?: LocalDirectoryAccess;
+  onAccessChange?: (access: LocalDirectoryAccess) => void;
   unavailableReason?: ModeUnavailableReason;
   layoutUnavailableReason?: ModeUnavailableReason;
+  accessUnavailableReason?: AccessUnavailableReason;
 }
 
 /**
@@ -146,12 +184,16 @@ interface LocalDirectoryModeOptionsProps {
 export function LocalDirectoryModeOptions({
   value,
   onChange,
+  access = "write",
+  onAccessChange,
   unavailableReason,
   layoutUnavailableReason,
+  accessUnavailableReason,
 }: LocalDirectoryModeOptionsProps) {
   const { t } = useT("projects");
   const worktreeDisabled = unavailableReason !== undefined;
   const layoutDisabled = layoutUnavailableReason !== undefined;
+  const sharedDisabled = accessUnavailableReason !== undefined;
 
   return (
     <div className="flex flex-col gap-2">
@@ -195,6 +237,36 @@ export function LocalDirectoryModeOptions({
         }
         onSelect={() => onChange("workspace_layout")}
       />
+      {value === "in_place" && onAccessChange && (
+        <div
+          role="radiogroup"
+          aria-label={t(($) => $.resources.access_group_label)}
+          className="mt-1 flex flex-col gap-2 border-t border-border pt-2"
+        >
+          <ModeOption
+            icon={<Lock className="size-4" />}
+            title={t(($) => $.resources.access_write_title)}
+            description={t(($) => $.resources.access_write_description)}
+            identifier="write"
+            selected={access === "write"}
+            onSelect={() => onAccessChange("write")}
+          />
+          <ModeOption
+            icon={<Users className="size-4" />}
+            title={t(($) => $.resources.access_read_title)}
+            description={t(($) => $.resources.access_read_description)}
+            identifier="read"
+            selected={access === "read"}
+            disabled={sharedDisabled}
+            disabledReason={
+              accessUnavailableReason === "server_outdated"
+                ? t(($) => $.resources.access_needs_server_upgrade)
+                : undefined
+            }
+            onSelect={() => onAccessChange("read")}
+          />
+        </div>
+      )}
     </div>
   );
 }
