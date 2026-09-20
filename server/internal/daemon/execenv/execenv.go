@@ -732,11 +732,11 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}
 	}
 
-	// For Cursor, materialize managed MCP into project-local config and use
-	// an isolated CURSOR_DATA_DIR for the per-workdir approval sidecar. Cursor
-	// still reads ~/.cursor/mcp.json, but only servers with approval entries in
-	// this per-task data dir can load, so user-global MCP servers do not leak
-	// into managed-MCP runs.
+	// For Cursor, isolate CURSOR_DATA_DIR so workspace trust and MCP
+	// approvals are pre-written and cursor-agent does not prompt. A
+	// managed mcp_config also writes .cursor/mcp.json; an empty config
+	// leaves that file alone and approves servers already declared in
+	// the project / user mcp.json files.
 	if params.Provider == "cursor" {
 		cursorDataDir, err := prepareCursorMcpConfig(envRoot, workDir, params.McpConfig, params.CursorMcpAuthSource, manifest)
 		if err != nil {

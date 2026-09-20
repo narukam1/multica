@@ -15,14 +15,14 @@ import (
 // Returns the git root path and true if found.
 func detectGitRepo(dir string) (string, bool) {
 	// Try regular repo first.
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd := gitCommand(dir, "rev-parse", "--show-toplevel")
 
 	if out, err := cmd.Output(); err == nil {
 		return strings.TrimSpace(string(out)), true
 	}
 
 	// Try bare repo: git-dir is "." for bare repos when -C points at the repo.
-	cmd = exec.Command("git", "-C", dir, "rev-parse", "--is-bare-repository")
+	cmd = gitCommand(dir, "rev-parse", "--is-bare-repository")
 
 	if out, err := cmd.Output(); err == nil && strings.TrimSpace(string(out)) == "true" {
 		return dir, true
@@ -33,7 +33,7 @@ func detectGitRepo(dir string) (string, bool) {
 
 // fetchOrigin runs `git fetch origin` to ensure the local repo has the latest remote refs.
 func fetchOrigin(gitRoot string) error {
-	cmd := exec.Command("git", "-C", gitRoot, "fetch", "origin")
+	cmd := gitCommand(gitRoot, "fetch", "origin")
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git fetch origin: %s: %w", strings.TrimSpace(string(out)), err)
@@ -45,7 +45,7 @@ func fetchOrigin(gitRoot string) error {
 // Falls back to "origin/main", then "HEAD".
 func getRemoteDefaultBranch(gitRoot string) string {
 	// Try symbolic-ref of origin/HEAD (set by `git clone` or `git remote set-head`).
-	cmd := exec.Command("git", "-C", gitRoot, "symbolic-ref", "refs/remotes/origin/HEAD")
+	cmd := gitCommand(gitRoot, "symbolic-ref", "refs/remotes/origin/HEAD")
 
 	if out, err := cmd.Output(); err == nil {
 		ref := strings.TrimSpace(string(out))
@@ -57,14 +57,14 @@ func getRemoteDefaultBranch(gitRoot string) string {
 	}
 
 	// Fallback: check if origin/main exists.
-	cmd = exec.Command("git", "-C", gitRoot, "rev-parse", "--verify", "origin/main")
+	cmd = gitCommand(gitRoot, "rev-parse", "--verify", "origin/main")
 
 	if err := cmd.Run(); err == nil {
 		return "origin/main"
 	}
 
 	// Fallback: check if origin/master exists.
-	cmd = exec.Command("git", "-C", gitRoot, "rev-parse", "--verify", "origin/master")
+	cmd = gitCommand(gitRoot, "rev-parse", "--verify", "origin/master")
 
 	if err := cmd.Run(); err == nil {
 		return "origin/master"
@@ -104,8 +104,14 @@ func gitArgs(dir string, args ...string) []string {
 	return append(out, args...)
 }
 
+func gitCommand(dir string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", gitArgs(dir, args...)...)
+	hideConsoleLeaf(cmd)
+	return cmd
+}
+
 func runGitWorktreeAdd(gitRoot, worktreePath, branchName, baseRef string) error {
-	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)...)
+	cmd := gitCommand(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), err)
@@ -117,7 +123,7 @@ func gitBranchExists(gitRoot, branchName string) bool {
 	if gitRoot == "" || branchName == "" {
 		return false
 	}
-	cmd := exec.Command("git", gitArgs(gitRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)...)
+	cmd := gitCommand(gitRoot, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
 	return cmd.Run() == nil
 }
 
@@ -129,7 +135,7 @@ func worktreeOnBranch(dir, branchName string) bool {
 	if err != nil || !info.IsDir() {
 		return false
 	}
-	cmd := exec.Command("git", gitArgs(dir, "rev-parse", "--abbrev-ref", "HEAD")...)
+	cmd := gitCommand(dir, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -142,7 +148,7 @@ func worktreeOnBranch(dir, branchName string) bool {
 // commits. A missing branch is created from baseRef (`worktree add -b`).
 func attachLayoutWorktree(gitRoot, worktreePath, branchName, baseRef string) (createdBranch bool, err error) {
 	if gitBranchExists(gitRoot, branchName) {
-		cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", worktreePath, branchName)...)
+		cmd := gitCommand(gitRoot, "worktree", "add", worktreePath, branchName)
 		if out, addErr := cmd.CombinedOutput(); addErr != nil {
 			return false, fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), addErr)
 		}
@@ -151,7 +157,7 @@ func attachLayoutWorktree(gitRoot, worktreePath, branchName, baseRef string) (cr
 	if strings.TrimSpace(baseRef) == "" {
 		baseRef = "HEAD"
 	}
-	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)...)
+	cmd := gitCommand(gitRoot, "worktree", "add", "-b", branchName, worktreePath, baseRef)
 	if out, addErr := cmd.CombinedOutput(); addErr != nil {
 		return true, fmt.Errorf("git worktree add: %s: %w", strings.TrimSpace(string(out)), addErr)
 	}
@@ -162,10 +168,10 @@ func attachLayoutWorktree(gitRoot, worktreePath, branchName, baseRef string) (cr
 // deleted only when this call created it — never an issue branch that already
 // held prior runs' commits.
 func cleanupFailedWorktreeAdd(gitRoot, worktreePath, branchName string, createdBranch bool) {
-	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "remove", "--force", worktreePath)...).Run()
-	_ = exec.Command("git", gitArgs(gitRoot, "worktree", "prune")...).Run()
+	_ = gitCommand(gitRoot, "worktree", "remove", "--force", worktreePath).Run()
+	_ = gitCommand(gitRoot, "worktree", "prune").Run()
 	if createdBranch && branchName != "" {
-		_ = exec.Command("git", gitArgs(gitRoot, "branch", "-D", branchName)...).Run()
+		_ = gitCommand(gitRoot, "branch", "-D", branchName).Run()
 	}
 	_ = os.RemoveAll(worktreePath)
 }
@@ -173,7 +179,7 @@ func cleanupFailedWorktreeAdd(gitRoot, worktreePath, branchName string, createdB
 // removeGitWorktree removes a worktree and its branch. Best-effort: logs errors.
 func removeGitWorktree(gitRoot, worktreePath, branchName string, logger *slog.Logger) {
 	// Remove the worktree.
-	cmd := exec.Command("git", gitArgs(gitRoot, "worktree", "remove", "--force", worktreePath)...)
+	cmd := gitCommand(gitRoot, "worktree", "remove", "--force", worktreePath)
 
 	if out, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn("execenv: git worktree remove failed", "output", strings.TrimSpace(string(out)), "error", err)
@@ -181,7 +187,7 @@ func removeGitWorktree(gitRoot, worktreePath, branchName string, logger *slog.Lo
 
 	// Delete the branch (best-effort).
 	if branchName != "" {
-		cmd = exec.Command("git", gitArgs(gitRoot, "branch", "-D", branchName)...)
+		cmd = gitCommand(gitRoot, "branch", "-D", branchName)
 
 		if out, err := cmd.CombinedOutput(); err != nil {
 			logger.Warn("execenv: git branch delete failed", "branch", branchName, "output", strings.TrimSpace(string(out)), "error", err)
@@ -192,7 +198,7 @@ func removeGitWorktree(gitRoot, worktreePath, branchName string, logger *slog.Lo
 // excludeFromGit adds a pattern to the worktree's .git/info/exclude file.
 func excludeFromGit(worktreePath, pattern string) error {
 	// Resolve the actual git dir for this worktree.
-	cmd := exec.Command("git", "-C", worktreePath, "rev-parse", "--git-dir")
+	cmd := gitCommand(worktreePath, "rev-parse", "--git-dir")
 
 	out, err := cmd.Output()
 	if err != nil {

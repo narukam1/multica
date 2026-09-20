@@ -15,7 +15,9 @@ func createDirLink(src, dst string) error {
 	if err := os.Symlink(src, dst); err == nil {
 		return nil
 	}
-	out, err := exec.Command("cmd", "/c", "mklink", "/J", dst, src).CombinedOutput()
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", dst, src)
+	hideConsoleLeaf(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mklink /J %s %s: %s: %w", dst, src, out, err)
 	}

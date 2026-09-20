@@ -45,38 +45,52 @@ type cursorRemoteMcpApprovalServer struct {
 	Headers json.RawMessage `json:"headers,omitempty"`
 }
 
-// prepareCursorMcpConfig writes the Cursor-native MCP sidecars for agents that
-// have an explicit managed mcp_config saved. A nil/null mcp_config means "let
-// Cursor behave normally", so no .cursor/mcp.json or CURSOR_DATA_DIR is created.
+// prepareCursorMcpConfig writes the Cursor-native MCP sidecars.
+//
+// A managed mcp_config still owns .cursor/mcp.json (and refuses to overwrite
+// an existing file). A nil/null mcp_config leaves that file alone so the
+// project and ~/.cursor servers stay in charge, but still isolates
+// CURSOR_DATA_DIR with workspace trust + approval keys for those existing
+// servers. Without that sidecar, cursor-agent falls through to the user's
+// interactive trust / "allow MCP" prompts on every new workdir.
 func prepareCursorMcpConfig(envRoot, workDir string, mcpConfig json.RawMessage, mcpAuthSource string, manifest *sidecarManifest) (string, error) {
-	if !hasManagedCursorMcpConfig(mcpConfig) {
-		return "", nil
-	}
 	if envRoot == "" {
+		if !hasManagedCursorMcpConfig(mcpConfig) {
+			return "", nil
+		}
 		return "", fmt.Errorf("env root is required for managed cursor mcp_config")
 	}
 
 	projectRoot := cursorProjectRoot(workDir)
-	servers, err := parseCursorManagedMcpServers(mcpConfig)
-	if err != nil {
-		return "", err
-	}
-
-	cursorDir := filepath.Join(projectRoot, ".cursor")
-	if err := recordMkdirAll(cursorDir, 0o755, manifest); err != nil {
-		return "", fmt.Errorf("create .cursor dir: %w", err)
-	}
-	configData, err := marshalCursorMcpConfig(servers)
-	if err != nil {
-		return "", err
-	}
-	if err := recordWriteFile(filepath.Join(cursorDir, "mcp.json"), configData, 0o600, manifest); err != nil {
-		if errors.Is(err, errPathPreExists) {
-			return "", fmt.Errorf("managed cursor mcp_config would overwrite existing .cursor/mcp.json")
+	var servers map[string]json.RawMessage
+	if hasManagedCursorMcpConfig(mcpConfig) {
+		parsed, err := parseCursorManagedMcpServers(mcpConfig)
+		if err != nil {
+			return "", err
 		}
-		return "", fmt.Errorf("write .cursor/mcp.json: %w", err)
+		servers = parsed
+		cursorDir := filepath.Join(projectRoot, ".cursor")
+		if err := recordMkdirAll(cursorDir, 0o755, manifest); err != nil {
+			return "", fmt.Errorf("create .cursor dir: %w", err)
+		}
+		configData, err := marshalCursorMcpConfig(servers)
+		if err != nil {
+			return "", err
+		}
+		if err := recordWriteFile(filepath.Join(cursorDir, "mcp.json"), configData, 0o600, manifest); err != nil {
+			if errors.Is(err, errPathPreExists) {
+				return "", fmt.Errorf("managed cursor mcp_config would overwrite existing .cursor/mcp.json")
+			}
+			return "", fmt.Errorf("write .cursor/mcp.json: %w", err)
+		}
+	} else {
+		servers = loadWorkspaceCursorMcpServers(projectRoot)
 	}
 
+	return writeCursorProjectDataDir(envRoot, projectRoot, servers, mcpAuthSource)
+}
+
+func writeCursorProjectDataDir(envRoot, projectRoot string, servers map[string]json.RawMessage, mcpAuthSource string) (string, error) {
 	cursorDataDir := filepath.Join(envRoot, "cursor-data")
 	projectDataDir := filepath.Join(cursorDataDir, "projects", cursorSlugifyPath(projectRoot))
 	if err := os.MkdirAll(projectDataDir, 0o700); err != nil {
@@ -112,8 +126,40 @@ func prepareCursorMcpConfig(envRoot, workDir string, mcpConfig json.RawMessage, 
 			return "", err
 		}
 	}
-
 	return cursorDataDir, nil
+}
+
+func loadWorkspaceCursorMcpServers(projectRoot string) map[string]json.RawMessage {
+	out := map[string]json.RawMessage{}
+	merge := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return
+		}
+		servers, err := parseCursorManagedMcpServers(raw)
+		if err != nil {
+			return
+		}
+		for name, server := range servers {
+			out[name] = server
+		}
+	}
+	// Project file wins on name collision so the workspace copy is what
+	// cursor-agent actually attaches.
+	merge(userCursorMcpPath())
+	merge(filepath.Join(projectRoot, ".cursor", "mcp.json"))
+	return out
+}
+
+func userCursorMcpPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".cursor", "mcp.json")
 }
 
 func seedCursorMcpAuthFile(projectDataDir, source string) error {

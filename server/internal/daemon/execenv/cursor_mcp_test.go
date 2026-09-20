@@ -270,8 +270,10 @@ func TestPrepareCursorMcpConfigRejectsArbitraryAuthSourceFile(t *testing.T) {
 	}
 }
 
-func TestPrepareCursorMcpConfigNilDoesNotTakeOwnership(t *testing.T) {
-	t.Parallel()
+func TestPrepareCursorMcpConfigNilDoesNotWriteProjectMcp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	envRoot := t.TempDir()
 	workDir := filepath.Join(envRoot, "workdir")
@@ -282,11 +284,74 @@ func TestPrepareCursorMcpConfigNilDoesNotTakeOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareCursorMcpConfig: %v", err)
 	}
-	if cursorDataDir != "" {
-		t.Fatalf("CursorDataDir = %q, want empty", cursorDataDir)
+	if cursorDataDir != filepath.Join(envRoot, "cursor-data") {
+		t.Fatalf("CursorDataDir = %q, want isolated cursor-data", cursorDataDir)
 	}
 	if _, err := os.Stat(filepath.Join(workDir, ".cursor", "mcp.json")); !os.IsNotExist(err) {
 		t.Fatalf(".cursor/mcp.json should not exist, stat err=%v", err)
+	}
+	projectRoot := cursorProjectRoot(workDir)
+	projectDataDir := filepath.Join(cursorDataDir, "projects", cursorSlugifyPath(projectRoot))
+	if _, err := os.Stat(filepath.Join(projectDataDir, cursorWorkspaceTrustedFile)); err != nil {
+		t.Fatalf("workspace trust file missing: %v", err)
+	}
+	rawApprovals, err := os.ReadFile(filepath.Join(projectDataDir, "mcp-approvals.json"))
+	if err != nil {
+		t.Fatalf("read mcp-approvals.json: %v", err)
+	}
+	var approvals []string
+	if err := json.Unmarshal(rawApprovals, &approvals); err != nil {
+		t.Fatalf("unmarshal approvals: %v", err)
+	}
+	if len(approvals) != 0 {
+		t.Fatalf("approvals = %v, want empty when no existing mcp.json", approvals)
+	}
+}
+
+func TestPrepareCursorMcpConfigUnmanagedApprovesExistingProjectFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	envRoot := t.TempDir()
+	workDir := filepath.Join(envRoot, "workdir")
+	if err := os.MkdirAll(filepath.Join(workDir, ".cursor"), 0o755); err != nil {
+		t.Fatalf("mkdir .cursor: %v", err)
+	}
+	existing := []byte(`{"mcpServers":{"fetch":{"command":"uvx","args":["mcp-server-fetch"]}}}` + "\n")
+	mcpPath := filepath.Join(workDir, ".cursor", "mcp.json")
+	if err := os.WriteFile(mcpPath, existing, 0o644); err != nil {
+		t.Fatalf("write existing mcp.json: %v", err)
+	}
+
+	cursorDataDir, err := prepareCursorMcpConfig(envRoot, workDir, nil, "", &sidecarManifest{})
+	if err != nil {
+		t.Fatalf("prepareCursorMcpConfig: %v", err)
+	}
+	got, err := os.ReadFile(mcpPath)
+	if err != nil {
+		t.Fatalf("reread mcp.json: %v", err)
+	}
+	if string(got) != string(existing) {
+		t.Fatalf("unmanaged prepare overwrote .cursor/mcp.json:\n%s", got)
+	}
+	projectRoot := cursorProjectRoot(workDir)
+	rawApprovals, err := os.ReadFile(filepath.Join(cursorDataDir, "projects", cursorSlugifyPath(projectRoot), "mcp-approvals.json"))
+	if err != nil {
+		t.Fatalf("read mcp-approvals.json: %v", err)
+	}
+	var approvals []string
+	if err := json.Unmarshal(rawApprovals, &approvals); err != nil {
+		t.Fatalf("unmarshal approvals: %v", err)
+	}
+	want, err := cursorMcpApprovalKeys(projectRoot, map[string]json.RawMessage{
+		"fetch": json.RawMessage(`{"command":"uvx","args":["mcp-server-fetch"]}`),
+	})
+	if err != nil {
+		t.Fatalf("expected approvals: %v", err)
+	}
+	if !reflect.DeepEqual(approvals, want) {
+		t.Fatalf("approvals = %v, want %v", approvals, want)
 	}
 }
 

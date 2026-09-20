@@ -14,7 +14,9 @@ import (
 // worktree-ops-reference (mklink /J). Junctions do not require elevation and
 // are what Java / Maven / CodeGraph already resolve on this team's machines.
 func createSharedDirLink(src, dest string) error {
-	out, err := exec.Command("cmd", "/c", "mklink", "/J", dest, src).CombinedOutput()
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", dest, src)
+	hideConsoleLeaf(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mklink /J %s %s: %s: %w", dest, src, strings.TrimSpace(string(out)), err)
 	}
