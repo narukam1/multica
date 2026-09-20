@@ -25,6 +25,11 @@ type WorkspaceLayoutParams struct {
 	TaskID          string
 	IssueID         string
 	IssueIdentifier string
+	// IssueTitle / IssueDescription are the claimed issue body. on_demand
+	// task_relevant_only and child branch.child_repos={tb_id} read these;
+	// comments and project text are not a substitute.
+	IssueTitle       string
+	IssueDescription string
 	// IssueParentID / IssueParentIdentifier are the issue row's parent
 	// (not quick-create "file under"). Used to inherit dest/branch when
 	// this step issue has no distinct TB identifier of its own.
@@ -86,6 +91,10 @@ type workspaceLayoutFile struct {
 			Source string `yaml:"source"`
 		} `yaml:"junction"`
 	} `yaml:"on_demand"`
+	Branch struct {
+		ChildRepos string `yaml:"child_repos"`
+		Root       string `yaml:"root"`
+	} `yaml:"branch"`
 }
 
 // PrepareWorkspaceLayout builds envRoot/workspace from the reference tree.
@@ -106,13 +115,14 @@ func PrepareWorkspaceLayout(params WorkspaceLayoutParams, logger *slog.Logger) (
 		return nil, fmt.Errorf("workspace_layout: create dest parent: %w", err)
 	}
 	branch := layoutBranchName(params)
+	childBranch := childLayoutBranchName(params, cfg)
 	wl := &WorkspaceLayout{WorkDir: destRoot, Branch: branch}
 
 	if err := materialiseAlways(root, destRoot, branch, cfg, wl, logger); err != nil {
 		wl.rollbackPrepare(logger)
 		return nil, err
 	}
-	if err := materialiseOnDemand(root, destRoot, branch, cfg, params.RelevantRepos, wl, logger); err != nil {
+	if err := materialiseOnDemand(root, destRoot, childBranch, cfg, params.RelevantRepos, wl, logger); err != nil {
 		wl.rollbackPrepare(logger)
 		return nil, err
 	}
@@ -264,6 +274,70 @@ func layoutBranchName(params WorkspaceLayoutParams) string {
 		return "feature-" + normalizeTBIdent(raw)
 	}
 	return "multica/" + sanitizeName(raw)
+}
+
+// childLayoutBranchName is the on_demand git_worktree branch. yaml
+// branch.child_repos (e.g. feature-{tb_id}) wins when a TB implement id
+// can be resolved; otherwise the root layout branch is reused.
+func childLayoutBranchName(params WorkspaceLayoutParams, cfg workspaceLayoutFile) string {
+	rootBranch := layoutBranchName(params)
+	tmpl := strings.TrimSpace(cfg.Branch.ChildRepos)
+	if tmpl == "" {
+		return rootBranch
+	}
+	tb := implementTBIdent(params)
+	if tb == "" {
+		return rootBranch
+	}
+	out := strings.ReplaceAll(tmpl, "{tb_id}", tb)
+	if out == "" || strings.Contains(out, "{") {
+		return rootBranch
+	}
+	return out
+}
+
+var implementTBIdentInText = regexp.MustCompile(`(?i)\b((?:lhwu|eegv|roiu)(?:-[0-9]+)+)\b`)
+var productReqIdentInText = regexp.MustCompile(`(?i)\b((?:req)(?:-[0-9]+)+)\b`)
+
+// implementTBIdent is the {tb_id} for child_repos. LHWU/EEGV/ROIU win over
+// REQ so a product-spec mention in the same body does not become the
+// implement branch.
+func implementTBIdent(params WorkspaceLayoutParams) string {
+	params = applyLayoutKey(params)
+	for _, raw := range []string{params.IssueIdentifier, params.LayoutOwnerIdentifier, params.IssueParentIdentifier} {
+		if k := tbIdentKey(raw); k != "" && !isProductReqIdent(k) {
+			return k
+		}
+	}
+	texts := []string{
+		params.IssueIdentifier,
+		params.LayoutOwnerIdentifier,
+		params.IssueParentIdentifier,
+		params.IssueTitle,
+		params.IssueDescription,
+	}
+	if k := firstIdentInText(implementTBIdentInText, texts...); k != "" {
+		return k
+	}
+	for _, raw := range []string{params.IssueIdentifier, params.LayoutOwnerIdentifier, params.IssueParentIdentifier} {
+		if k := tbIdentKey(raw); k != "" {
+			return k
+		}
+	}
+	return firstIdentInText(productReqIdentInText, texts...)
+}
+
+func isProductReqIdent(raw string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(raw)), "REQ-")
+}
+
+func firstIdentInText(re *regexp.Regexp, texts ...string) string {
+	for _, text := range texts {
+		if m := re.FindStringSubmatch(text); len(m) > 1 {
+			return normalizeTBIdent(m[1])
+		}
+	}
+	return ""
 }
 
 func normalizeTBIdent(raw string) string {

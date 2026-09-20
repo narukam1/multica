@@ -211,6 +211,99 @@ func TestParseLayoutRepoPaths(t *testing.T) {
 	}
 }
 
+func TestChildLayoutBranchNameUsesYamlTBTemplate(t *testing.T) {
+	cfg := workspaceLayoutFile{}
+	cfg.Branch.ChildRepos = "feature-{tb_id}"
+	got := childLayoutBranchName(WorkspaceLayoutParams{
+		IssueIdentifier:  "VEGA-11",
+		IssueDescription: "关联 REQ-2609-198 / TB LHWU-287，实现 backend/srm-purchase-cooperation-op",
+	}, cfg)
+	if got != "feature-LHWU-287" {
+		t.Fatalf("childLayoutBranchName = %q, want feature-LHWU-287", got)
+	}
+}
+
+func TestChildLayoutBranchNameFallsBackWithoutTB(t *testing.T) {
+	cfg := workspaceLayoutFile{}
+	cfg.Branch.ChildRepos = "feature-{tb_id}"
+	got := childLayoutBranchName(WorkspaceLayoutParams{IssueIdentifier: "VEGA-11"}, cfg)
+	if got != "multica/vega-11" {
+		t.Fatalf("childLayoutBranchName = %q, want multica/vega-11", got)
+	}
+}
+
+func TestImplementTBIdentPrefersLHWUOverREQ(t *testing.T) {
+	got := implementTBIdent(WorkspaceLayoutParams{
+		IssueIdentifier:  "VEGA-11",
+		IssueDescription: "产品 REQ-2609-198；开发 LHWU-287",
+	})
+	if got != "LHWU-287" {
+		t.Fatalf("implementTBIdent = %q, want LHWU-287", got)
+	}
+}
+
+func TestPrepareWorkspaceLayoutChildUsesFeatureTBBranch(t *testing.T) {
+	root := initCompositeReference(t)
+	other := filepath.Join(root, "backend", "svc-b")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, other, map[string]string{"other.go": "package other\n"})
+	layout := []byte(`
+version: 1
+kind: composite_workspace
+always:
+  - path: "."
+    isolation: git_worktree
+  - path: standard
+    isolation: junction
+    source: standard
+on_demand:
+  git_worktree:
+    include: task_relevant_only
+branch:
+  child_repos: "feature-{tb_id}"
+  root: inherit_or_task
+`)
+	if err := os.WriteFile(filepath.Join(root, ".index", "workspace-layout.yaml"), layout, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	desc := "实现 backend/svc-a，关联 REQ-2609-198 / LHWU-287"
+	wl, err := PrepareWorkspaceLayout(WorkspaceLayoutParams{
+		LocalPath:        root,
+		EnvRoot:          t.TempDir(),
+		IssueIdentifier:  "VEGA-11",
+		IssueDescription: desc,
+		TaskID:           "t",
+		RelevantRepos:    ParseLayoutRepoPaths(desc),
+	}, worktreeTestLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wl.Discard(worktreeTestLogger())
+	if wl.Branch != "multica/vega-11" {
+		t.Fatalf("root branch = %q, want multica/vega-11", wl.Branch)
+	}
+	if _, err := os.Stat(filepath.Join(wl.WorkDir, "backend", "svc-a", "main.go")); err != nil {
+		t.Fatalf("relevant child missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wl.WorkDir, "backend", "svc-b", "other.go")); err == nil {
+		t.Fatal("unrelated child was materialised")
+	}
+	child := filepath.Join(root, "backend", "svc-a")
+	out, err := exec.Command("git", "-C", child, "rev-parse", "--abbrev-ref", "feature-LHWU-287").CombinedOutput()
+	if err != nil {
+		t.Fatalf("child branch feature-LHWU-287 missing: %s: %v", out, err)
+	}
+	head, err := exec.Command("git", "-C", filepath.Join(wl.WorkDir, "backend", "svc-a"), "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(head)); got != "feature-LHWU-287" {
+		t.Fatalf("child HEAD = %q, want feature-LHWU-287", got)
+	}
+}
+
 func TestResolveLayoutKeyInheritsParentWithoutTB(t *testing.T) {
 	got := ResolveLayoutKey(WorkspaceLayoutParams{
 		IssueID:               "child",

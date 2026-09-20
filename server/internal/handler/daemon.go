@@ -2619,6 +2619,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, failure
 		}
 		resp.ThreadName = issue.Title
+		resp.IssueTitle = issue.Title
+		if issue.Description.Valid {
+			resp.IssueDescription = issue.Description.String
+		}
 		issueNumber = issue.Number
 		layoutIssueCopy := issue
 		layoutIssue = &layoutIssueCopy

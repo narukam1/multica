@@ -2113,6 +2113,50 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 // it into the brief. This is the handler-side boundary the execenv tests can't
 // cover: if this assignment regresses, the description silently stops reaching
 // the agent while the execenv rendering tests still pass.
+func TestClaimTask_IssueDescriptionInjected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	const issueDescription = "实现 backend/srm-purchase-cooperation-op，关联 LHWU-287 / REQ-2609-198"
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "layout child repo", testutil.Cols{
+		"description": issueDescription,
+		"priority":    "medium",
+		"number":      88004,
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID,
+		"issue_id":   issueID,
+	})
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil, testWorkspaceID, "test-claim-issue-desc")
+	req = withURLParam(req, "runtimeId", runtimeID)
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
+
+	var resp struct {
+		Task *struct {
+			IssueTitle       string `json:"issue_title"`
+			IssueDescription string `json:"issue_description"`
+		} `json:"task"`
+	}
+	w.JSON(&resp)
+	if resp.Task == nil {
+		t.Fatal("expected task in response")
+	}
+	if resp.Task.IssueTitle != "layout child repo" {
+		t.Errorf("issue_title = %q, want layout child repo", resp.Task.IssueTitle)
+	}
+	if resp.Task.IssueDescription != issueDescription {
+		t.Errorf("issue_description = %q, want %q", resp.Task.IssueDescription, issueDescription)
+	}
+}
+
 func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
