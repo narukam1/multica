@@ -180,6 +180,7 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Grok:        writes {workDir}/AGENTS.md  (Grok Build CLI reads AGENTS.md natively from the workdir)
 // For Qwen:        writes {workDir}/QWEN.md (Qwen Code's native context file; it also reads AGENTS.md, but QWEN.md avoids cross-runtime ambiguity)
 func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
+	applyWorkdirAgentConfig(workDir, &ctx)
 	content := buildMetaSkillContent(provider, ctx)
 	path := runtimeConfigPath(workDir, provider)
 	if path == "" {

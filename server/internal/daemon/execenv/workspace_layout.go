@@ -50,13 +50,15 @@ type LayoutKey struct {
 	IssueIdentifier string
 }
 
-// WorkspaceLayout is the prepared composite tree. Finalize commits leftovers
-// onto the issue branch and leaves the tree mounted for the next run.
+// WorkspaceLayout is the prepared composite tree. Finalize leaves the tree
+// mounted for the next run. Whether leftovers are auto-committed is
+// workspace-layout.yaml agent.finalize_commit (default chore).
 type WorkspaceLayout struct {
-	WorkDir  string
-	Members  []workspaceLayoutMember
-	Branch   string
-	prepared bool
+	WorkDir        string
+	Members        []workspaceLayoutMember
+	Branch         string
+	finalizeCommit string
+	prepared       bool
 }
 
 type workspaceLayoutMember struct {
@@ -95,6 +97,15 @@ type workspaceLayoutFile struct {
 		ChildRepos string `yaml:"child_repos"`
 		Root       string `yaml:"root"`
 	} `yaml:"branch"`
+	Agent workspaceLayoutAgent `yaml:"agent"`
+}
+
+// workspaceLayoutAgent is project-owned Multica run policy. Names of
+// skills are never listed here — dest already has them.
+type workspaceLayoutAgent struct {
+	AdvertiseWorkdirSkills bool   `yaml:"advertise_workdir_skills"`
+	Brief                  string `yaml:"brief"`
+	FinalizeCommit         string `yaml:"finalize_commit"`
 }
 
 // PrepareWorkspaceLayout builds envRoot/workspace from the reference tree.
@@ -116,7 +127,11 @@ func PrepareWorkspaceLayout(params WorkspaceLayoutParams, logger *slog.Logger) (
 	}
 	branch := layoutBranchName(params)
 	childBranch := childLayoutBranchName(params, cfg)
-	wl := &WorkspaceLayout{WorkDir: destRoot, Branch: branch}
+	wl := &WorkspaceLayout{
+		WorkDir:        destRoot,
+		Branch:         branch,
+		finalizeCommit: normalizeFinalizeCommit(cfg.Agent.FinalizeCommit),
+	}
 
 	if err := materialiseAlways(root, destRoot, branch, cfg, wl, logger); err != nil {
 		wl.rollbackPrepare(logger)
@@ -568,13 +583,17 @@ func linkIfExists(root, destRoot, srcRel, destRel string, wl *WorkspaceLayout) e
 	return nil
 }
 
-// Finalize commits leftovers onto the issue branch and leaves the composite
-// tree mounted so the next run remounts or reuses the same dest.
+// Finalize leaves the composite tree mounted so the next run remounts or
+// reuses the same dest. finalize_commit=leave keeps leftovers uncommitted
+// so a project skill can draft the message; chore (default) snapshots them.
 func (w *WorkspaceLayout) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, error) {
 	if w == nil {
 		return LocalWorktreeOutcome{}, nil
 	}
 	outcome := LocalWorktreeOutcome{Branch: w.Branch}
+	if normalizeFinalizeCommit(w.finalizeCommit) == finalizeCommitLeave {
+		return outcome, nil
+	}
 	var firstErr error
 	for i := len(w.Members) - 1; i >= 0; i-- {
 		m := w.Members[i]

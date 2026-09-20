@@ -194,6 +194,16 @@ func writeWorkspaceContext(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("\n\n")
 }
 
+func writeProjectBrief(b *strings.Builder, ctx TaskContextForEnv) {
+	body := strings.TrimRight(ctx.ProjectBrief, " \t\r\n")
+	if body == "" {
+		return
+	}
+	b.WriteString("## Project conventions\n\n")
+	b.WriteString(body)
+	b.WriteString("\n\n")
+}
+
 // BuildConnectedAppsBlock renders the Connected Apps block for the per-turn
 // user message. The app set is per-run state (runtime MCP overlays are
 // resolved at enqueue time), so it cannot live in the runtime brief without
@@ -818,17 +828,44 @@ func builtinSlug(skills []SkillContextForEnv, name string) (string, bool) {
 // every provider that actually reached it — grok and traecli write to
 // `.grok/skills` and `.traecli/skills` — while both discover natively and never
 // needed the pointer.
+func skillIndexNames(bound []SkillContextForEnv, workdir []string) []string {
+	seen := make(map[string]struct{}, len(bound)+len(workdir))
+	var names []string
+	add := func(raw string) {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for _, skill := range bound {
+		add(skill.Name)
+	}
+	for _, name := range workdir {
+		add(sanitizeSkillName(name))
+	}
+	return names
+}
+
 func writeSkills(b *strings.Builder, ctx TaskContextForEnv) {
 	skills := modelVisibleSkills(ctx.AgentSkills)
-	if len(skills) == 0 {
+	names := skillIndexNames(skills, ctx.WorkdirSkillNames)
+	if len(names) == 0 {
 		return
 	}
 	b.WriteString("## Skills\n\n")
 	b.WriteString("You have the following skills installed (discovered automatically):\n\n")
-	for _, skill := range skills {
-		fmt.Fprintf(b, "- **%s**\n", skill.Name)
+	for _, name := range names {
+		fmt.Fprintf(b, "- **%s**\n", name)
 	}
 	b.WriteString("\n")
+	if len(ctx.WorkdirSkillNames) > 0 {
+		b.WriteString("Names that already exist under the working tree skill directories are project skills; load those SKILL.md files when the task matches. Platform skills cover Multica control-plane actions only.\n\n")
+	}
 	platformSlug, _ := builtinSlug(skills, platformSkillName)
 	// One recall hint for the platform skill, because it is the only listed
 	// skill whose trigger is "the platform itself" rather than a task the
@@ -997,6 +1034,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeAgentIdentity(&b, ctx)
 	writeRequestingUser(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
+	writeProjectBrief(&b, ctx)
 
 	switch kind {
 	case kindQuickCreate:

@@ -495,6 +495,58 @@ func TestCleanupFailedWorktreeAddRemovesOrphanBranch(t *testing.T) {
 	}
 }
 
+func TestFinalizeLeaveKeepsUncommitted(t *testing.T) {
+	root := initCompositeReference(t)
+	layout := []byte(`
+version: 1
+kind: composite_workspace
+agent:
+  finalize_commit: leave
+always:
+  - path: "."
+    isolation: git_worktree
+  - path: standard
+    isolation: junction
+    source: standard
+on_demand:
+  git_worktree:
+    nested_must_with_parent: []
+  junction: []
+`)
+	if err := os.WriteFile(filepath.Join(root, ".index", "workspace-layout.yaml"), layout, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wl, err := PrepareWorkspaceLayout(WorkspaceLayoutParams{
+		LocalPath: root, EnvRoot: t.TempDir(), IssueIdentifier: "VEGA-9", TaskID: "task-1",
+	}, worktreeTestLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wl.Discard(worktreeTestLogger())
+	extra := filepath.Join(wl.WorkDir, "backend", "svc-a", "extra.go")
+	if err := os.WriteFile(extra, []byte("package svc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wl.Finalize(worktreeTestLogger()); err != nil {
+		t.Fatal(err)
+	}
+	destChild := filepath.Join(wl.WorkDir, "backend", "svc-a")
+	status, err := exec.Command("git", "-C", destChild, "status", "--porcelain").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(status), "extra.go") {
+		t.Fatalf("leave must keep extra.go uncommitted, status=%q", status)
+	}
+	logOut, err := exec.Command("git", "-C", destChild, "log", "--oneline").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(logOut), "chore(agent)") {
+		t.Fatalf("leave must not write chore commit, log=%s", logOut)
+	}
+}
+
 func TestPrepareWorkspaceLayoutRequiresLayoutFile(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root, map[string]string{"README.md": "x\n"})

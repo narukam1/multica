@@ -159,13 +159,20 @@ type TaskContextForEnv struct {
 	AgentName                     string
 	AgentInstructions             string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills                   []SkillContextForEnv
-	DisabledRuntimeSkills         []RuntimeSkillRefForEnv
-	Repos                         []RepoContextForEnv     // workspace repos available for checkout
-	ProjectID                     string                  // active project for this task, when present
-	ProjectTitle                  string                  // human-readable project title
-	ProjectDescription            string                  // durable project-level context, rendered into the brief's Project Context section
-	ProjectResources              []ProjectResourceForEnv // resources attached to the project
-	ChatSessionID                 string                  // non-empty for chat tasks
+	// WorkdirSkillNames are project skill directory slugs already on disk
+	// under cwd (from workspace-layout.yaml agent.advertise_workdir_skills).
+	// Names only; Multica does not copy or hardcode project skill bodies.
+	WorkdirSkillNames []string
+	// ProjectBrief is optional project-authored run policy loaded from the
+	// yaml agent.brief relative path. Empty when unset or unreadable.
+	ProjectBrief          string
+	DisabledRuntimeSkills []RuntimeSkillRefForEnv
+	Repos                 []RepoContextForEnv     // workspace repos available for checkout
+	ProjectID             string                  // active project for this task, when present
+	ProjectTitle          string                  // human-readable project title
+	ProjectDescription    string                  // durable project-level context, rendered into the brief's Project Context section
+	ProjectResources      []ProjectResourceForEnv // resources attached to the project
+	ChatSessionID         string                  // non-empty for chat tasks
 	// ChatChannelType is the IM platform behind a chat session ("slack",
 	// "feishu", "wecom"); empty for a web/mobile chat. It names the surface in
 	// the brief's copy; what that surface can DELIVER is the separate field
