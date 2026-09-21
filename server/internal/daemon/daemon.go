@@ -6100,7 +6100,7 @@ func (d *Daemon) acquireLocalDirectoryLockIfNeeded(ctx context.Context, task Tas
 			taskLog.Info("local_directory: chat task, skipping layout dest lock")
 			return nil, false
 		}
-		dest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(task, d.cfg.WorkspacesRoot, ""))
+		dest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(task, d.cfg.WorkspacesRoot, assignment.AbsPath))
 		if dest == "" {
 			taskLog.Info("workspace_layout: no issue dest, skipping dest lock")
 			return nil, false
@@ -6439,7 +6439,7 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 }
 
 func workspaceLayoutParamsForTask(task Task, workspacesRoot, localPath string) execenv.WorkspaceLayoutParams {
-	return execenv.WorkspaceLayoutParams{
+	params := execenv.WorkspaceLayoutParams{
 		LocalPath:             localPath,
 		WorkspacesRoot:        workspacesRoot,
 		WorkspaceID:           task.WorkspaceID,
@@ -6450,18 +6450,29 @@ func workspaceLayoutParamsForTask(task Task, workspacesRoot, localPath string) e
 		IssueDescription:      task.IssueDescription,
 		IssueParentID:         task.IssueParentID,
 		IssueParentIdentifier: task.IssueParentIdentifier,
+		LayoutAncestors:       task.LayoutAncestors,
 		LayoutOwnerID:         task.LayoutOwnerID,
 		LayoutOwnerIdentifier: task.LayoutOwnerIdentifier,
-		RelevantRepos: execenv.ParseLayoutRepoPaths(
-			task.IssueTitle,
-			task.IssueDescription,
-			task.ProjectDescription,
-			task.TriggerCommentContent,
-			task.WorkspaceContext,
-			task.HandoffNote,
-			task.ThreadName,
-		),
 	}
+	texts := []string{
+		task.IssueTitle,
+		task.IssueDescription,
+		task.ProjectDescription,
+		task.TriggerCommentContent,
+		task.WorkspaceContext,
+		task.HandoffNote,
+		task.ThreadName,
+	}
+	var pathPrefixes []string
+	if strings.TrimSpace(localPath) != "" {
+		if policy, err := execenv.LoadLayoutPolicy(localPath); err == nil {
+			params.ImplementPrefixes = policy.ImplementPrefixes
+			params.ProductPrefixes = policy.ProductPrefixes
+			pathPrefixes = policy.PathPrefixes
+		}
+	}
+	params.RelevantRepos = execenv.ParseLayoutRepoPaths(pathPrefixes, texts...)
+	return params
 }
 
 func taskRootDirParams(workspacesRoot string, task Task) execenv.RootDirParams {

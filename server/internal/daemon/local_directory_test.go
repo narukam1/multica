@@ -945,9 +945,18 @@ func TestAcquireLocksInheritedLayoutOwnerDest(t *testing.T) {
 		IssueIdentifier:       "VEGA-6",
 		IssueParentID:         parent.IssueID,
 		IssueParentIdentifier: parent.IssueIdentifier,
-		LayoutOwnerID:         parent.IssueID,
-		LayoutOwnerIdentifier: parent.IssueIdentifier,
-		ProjectResources:      resources,
+		LayoutOwnerID:         "must-not-win",
+		LayoutOwnerIdentifier: "WRONG-1",
+		LayoutAncestors: []execenv.LayoutAncestor{
+			{
+				IssueID:          "01a0ba17-7cc6-77c8-97ff-81b6076b4f10",
+				IssueIdentifier:  "VEGA-6",
+				ParentID:         parent.IssueID,
+				ParentIdentifier: parent.IssueIdentifier,
+			},
+			{IssueID: parent.IssueID, IssueIdentifier: parent.IssueIdentifier},
+		},
+		ProjectResources: resources,
 	}
 	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), parent, slog.Default())
 	if abort || release == nil {
@@ -962,6 +971,83 @@ func TestAcquireLocksInheritedLayoutOwnerDest(t *testing.T) {
 	}
 	if got := d.localPathLocks.Holder(childDest); got != parent.ID {
 		t.Fatalf("child dest holder = %q, want %s", got, parent.ID)
+	}
+}
+
+func TestAcquireLocksYamlPrefixesKeepDistinctDest(t *testing.T) {
+	t.Parallel()
+
+	const daemonID = "d-mine"
+	ref := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ref, ".index"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := []byte(`
+version: 1
+kind: composite_workspace
+ident:
+  implement_prefixes: [LHWU]
+always:
+  - path: "."
+    isolation: git_worktree
+`)
+	if err := os.WriteFile(filepath.Join(ref, ".index", "workspace-layout.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(localDirectoryRef{
+		LocalPath:     ref,
+		DaemonID:      daemonID,
+		ExecutionMode: localDirectoryModeWorkspaceLayout,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	resources := []ProjectResourceData{
+		{ID: "r1", ResourceType: localDirectoryResourceType, ResourceRef: raw},
+	}
+	wsRoot := t.TempDir()
+	d := &Daemon{
+		cfg:            Config{DaemonID: daemonID, WorkspacesRoot: wsRoot},
+		localPathLocks: NewLocalPathLocker(),
+		logger:         slog.Default(),
+	}
+	parent := Task{
+		ID:               "parent-task",
+		WorkspaceID:      "9ff372c4-ae7b-48f8-9433-34539dcdec38",
+		WorkspaceSlug:    "vega-2b6i",
+		IssueID:          "parent-id",
+		IssueIdentifier:  "LHWU-252",
+		ProjectResources: resources,
+	}
+	child := Task{
+		ID:                    "child-task",
+		WorkspaceID:           parent.WorkspaceID,
+		WorkspaceSlug:         parent.WorkspaceSlug,
+		IssueID:               "child-id",
+		IssueIdentifier:       "LHWU-300",
+		IssueParentID:         parent.IssueID,
+		IssueParentIdentifier: parent.IssueIdentifier,
+		LayoutOwnerID:         parent.IssueID,
+		LayoutOwnerIdentifier: parent.IssueIdentifier,
+		LayoutAncestors: []execenv.LayoutAncestor{
+			{IssueID: "child-id", IssueIdentifier: "LHWU-300", ParentID: parent.IssueID, ParentIdentifier: parent.IssueIdentifier},
+			{IssueID: parent.IssueID, IssueIdentifier: parent.IssueIdentifier},
+		},
+		ProjectResources: resources,
+	}
+	release, abort := d.acquireLocalDirectoryLockIfNeeded(context.Background(), parent, slog.Default())
+	if abort || release == nil {
+		t.Fatal("parent dest lock was not taken")
+	}
+	defer release()
+
+	parentDest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(parent, wsRoot, ref))
+	childDest := execenv.IssueLayoutWorkDir(workspaceLayoutParamsForTask(child, wsRoot, ref))
+	if parentDest == "" || parentDest == childDest {
+		t.Fatalf("yaml prefixes must keep distinct dest:\nparent %s\nchild  %s", parentDest, childDest)
+	}
+	if got := d.localPathLocks.Holder(childDest); got != "" {
+		t.Fatalf("child dest holder = %q, want empty (not the parent dest)", got)
 	}
 }
 

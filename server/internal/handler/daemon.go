@@ -3731,44 +3731,65 @@ func (h *Handler) attachClaimLayoutKey(ctx context.Context, resp *AgentTaskRespo
 	if resp == nil || !issue.ID.Valid {
 		return
 	}
-	if issue.ParentIssueID.Valid {
+	ancestors := h.collectLayoutAncestors(ctx, issue, prefix, resp.IssueIdentifier)
+	if len(ancestors) > 0 {
+		resp.LayoutAncestors = ancestors
+		if p := ancestors[0]; p.ParentID != "" {
+			resp.IssueParentID = p.ParentID
+			resp.IssueParentIdentifier = p.ParentIdentifier
+		}
+	} else if issue.ParentIssueID.Valid {
 		resp.IssueParentID = uuidToString(issue.ParentIssueID)
-		if parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-			ID:          issue.ParentIssueID,
-			WorkspaceID: issue.WorkspaceID,
-		}); err == nil && parent.ID.Valid {
-			resp.IssueParentIdentifier = service.IssueIdentifier(prefix, parent.Number)
-		}
 	}
-	key := execenv.WalkLayoutOwner(uuidToString(issue.ID), resp.IssueIdentifier, func(id string) (ident, parentID, parentIdent string, ok bool) {
-		parsed, err := util.ParseUUID(id)
-		if err != nil {
-			return "", "", "", false
-		}
-		row, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-			ID:          parsed,
-			WorkspaceID: issue.WorkspaceID,
-		})
-		if err != nil || !row.ID.Valid {
-			return "", "", "", false
-		}
-		ident = service.IssueIdentifier(prefix, row.Number)
-		if !row.ParentIssueID.Valid {
-			return ident, "", "", true
-		}
-		parent, perr := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-			ID:          row.ParentIssueID,
-			WorkspaceID: issue.WorkspaceID,
-		})
-		if perr != nil || !parent.ID.Valid {
-			return ident, uuidToString(row.ParentIssueID), "", true
-		}
-		return ident, uuidToString(parent.ID), service.IssueIdentifier(prefix, parent.Number), true
-	})
+	// Older daemons still read LayoutOwner* as inherit-always. New daemons
+	// ignore it and apply yaml prefixes to LayoutAncestors.
+	key := execenv.WalkLayoutOwner(uuidToString(issue.ID), resp.IssueIdentifier, execenv.LookupLayoutAncestors(ancestors))
 	if key.IssueID != "" {
 		resp.LayoutOwnerID = key.IssueID
 		resp.LayoutOwnerIdentifier = key.IssueIdentifier
 	}
+}
+
+func (h *Handler) collectLayoutAncestors(ctx context.Context, issue db.Issue, prefix, claimedIdent string) []execenv.LayoutAncestor {
+	var ancestors []execenv.LayoutAncestor
+	current := issue
+	seen := map[string]struct{}{}
+	for hop := 0; hop < 16; hop++ {
+		if !current.ID.Valid {
+			break
+		}
+		id := uuidToString(current.ID)
+		if id == "" {
+			break
+		}
+		if _, loop := seen[id]; loop {
+			break
+		}
+		seen[id] = struct{}{}
+		ident := service.IssueIdentifier(prefix, current.Number)
+		if hop == 0 && strings.TrimSpace(claimedIdent) != "" {
+			ident = strings.TrimSpace(claimedIdent)
+		}
+		a := execenv.LayoutAncestor{IssueID: id, IssueIdentifier: ident}
+		if !current.ParentIssueID.Valid {
+			ancestors = append(ancestors, a)
+			break
+		}
+		parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          current.ParentIssueID,
+			WorkspaceID: issue.WorkspaceID,
+		})
+		if err != nil || !parent.ID.Valid {
+			a.ParentID = uuidToString(current.ParentIssueID)
+			ancestors = append(ancestors, a)
+			break
+		}
+		a.ParentID = uuidToString(parent.ID)
+		a.ParentIdentifier = service.IssueIdentifier(prefix, parent.Number)
+		ancestors = append(ancestors, a)
+		current = parent
+	}
+	return ancestors
 }
 
 // ClaimTaskByRuntime atomically claims the next queued task for a runtime.

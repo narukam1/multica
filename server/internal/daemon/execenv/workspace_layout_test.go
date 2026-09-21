@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+func withSRMIdents(p WorkspaceLayoutParams) WorkspaceLayoutParams {
+	p.ImplementPrefixes = []string{"LHWU", "EEGV", "ROIU"}
+	p.ProductPrefixes = []string{"REQ"}
+	return p
+}
+
+func srmPathPrefixes() []string {
+	return []string{"backend", "frontend"}
+}
+
 func TestPrepareWorkspaceLayoutBuildsNestedReposAndJunction(t *testing.T) {
 	root := initCompositeReference(t)
 	envRoot := t.TempDir()
@@ -161,12 +171,19 @@ func TestLayoutBranchNameKeepsLatinIssueIdentifier(t *testing.T) {
 }
 
 func TestLayoutBranchNameUsesFeatureForTBIdent(t *testing.T) {
-	got := layoutBranchName(WorkspaceLayoutParams{IssueIdentifier: "LHWU-252", TaskID: "task-1"})
+	got := layoutBranchName(withSRMIdents(WorkspaceLayoutParams{IssueIdentifier: "LHWU-252", TaskID: "task-1"}))
 	if got != "feature-LHWU-252" {
 		t.Fatalf("layoutBranchName = %q, want feature-LHWU-252", got)
 	}
-	if got := layoutBranchName(WorkspaceLayoutParams{IssueIdentifier: "lhwu-252"}); got != "feature-LHWU-252" {
+	if got := layoutBranchName(withSRMIdents(WorkspaceLayoutParams{IssueIdentifier: "lhwu-252"})); got != "feature-LHWU-252" {
 		t.Fatalf("normalized = %q", got)
+	}
+}
+
+func TestLayoutBranchNameWithoutPrefixesKeepsLatin(t *testing.T) {
+	got := layoutBranchName(WorkspaceLayoutParams{IssueIdentifier: "LHWU-252", TaskID: "task-1"})
+	if got != "multica/lhwu-252" {
+		t.Fatalf("layoutBranchName = %q, want multica/lhwu-252 when prefixes are empty", got)
 	}
 }
 
@@ -205,19 +222,26 @@ func TestIssueLayoutWorkDirIgnoresTaskID(t *testing.T) {
 }
 
 func TestParseLayoutRepoPaths(t *testing.T) {
-	got := ParseLayoutRepoPaths("改 backend/srm-source-op 与 frontend/srm-front-core-op")
+	got := ParseLayoutRepoPaths(srmPathPrefixes(), "改 backend/srm-source-op 与 frontend/srm-front-core-op")
 	if len(got) != 2 || got[0] != "backend/srm-source-op" || got[1] != "frontend/srm-front-core-op" {
 		t.Fatalf("ParseLayoutRepoPaths = %#v", got)
+	}
+}
+
+func TestParseLayoutRepoPathsEmptyPrefixes(t *testing.T) {
+	got := ParseLayoutRepoPaths(nil, "改 backend/srm-source-op 与 frontend/srm-front-core-op")
+	if len(got) != 0 {
+		t.Fatalf("empty prefixes must not guess paths: %#v", got)
 	}
 }
 
 func TestChildLayoutBranchNameUsesYamlTBTemplate(t *testing.T) {
 	cfg := workspaceLayoutFile{}
 	cfg.Branch.ChildRepos = "feature-{tb_id}"
-	got := childLayoutBranchName(WorkspaceLayoutParams{
+	got := childLayoutBranchName(withSRMIdents(WorkspaceLayoutParams{
 		IssueIdentifier:  "VEGA-11",
 		IssueDescription: "关联 REQ-2609-198 / TB LHWU-287，实现 backend/srm-purchase-cooperation-op",
-	}, cfg)
+	}), cfg)
 	if got != "feature-LHWU-287" {
 		t.Fatalf("childLayoutBranchName = %q, want feature-LHWU-287", got)
 	}
@@ -233,10 +257,10 @@ func TestChildLayoutBranchNameFallsBackWithoutTB(t *testing.T) {
 }
 
 func TestImplementTBIdentPrefersLHWUOverREQ(t *testing.T) {
-	got := implementTBIdent(WorkspaceLayoutParams{
+	got := implementTBIdent(withSRMIdents(WorkspaceLayoutParams{
 		IssueIdentifier:  "VEGA-11",
 		IssueDescription: "产品 REQ-2609-198；开发 LHWU-287",
-	})
+	}))
 	if got != "LHWU-287" {
 		t.Fatalf("implementTBIdent = %q, want LHWU-287", got)
 	}
@@ -252,6 +276,9 @@ func TestPrepareWorkspaceLayoutChildUsesFeatureTBBranch(t *testing.T) {
 	layout := []byte(`
 version: 1
 kind: composite_workspace
+ident:
+  implement_prefixes: [LHWU, EEGV, ROIU]
+  product_prefixes: [REQ]
 always:
   - path: "."
     isolation: git_worktree
@@ -261,6 +288,7 @@ always:
 on_demand:
   git_worktree:
     include: task_relevant_only
+    path_prefixes: [backend, frontend]
 branch:
   child_repos: "feature-{tb_id}"
   root: inherit_or_task
@@ -275,7 +303,7 @@ branch:
 		IssueIdentifier:  "VEGA-11",
 		IssueDescription: desc,
 		TaskID:           "t",
-		RelevantRepos:    ParseLayoutRepoPaths(desc),
+		RelevantRepos:    ParseLayoutRepoPaths(srmPathPrefixes(), desc),
 	}, worktreeTestLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -304,6 +332,18 @@ branch:
 	}
 }
 
+func TestResolveLayoutKeyEmptyPrefixesInheritsDistinctIdent(t *testing.T) {
+	got := ResolveLayoutKey(WorkspaceLayoutParams{
+		IssueID:               "child",
+		IssueIdentifier:       "LHWU-300",
+		IssueParentID:         "parent",
+		IssueParentIdentifier: "LHWU-252",
+	})
+	if got.IssueID != "parent" || got.IssueIdentifier != "LHWU-252" {
+		t.Fatalf("got %+v, want parent inherit when prefixes are empty", got)
+	}
+}
+
 func TestResolveLayoutKeyInheritsParentWithoutTB(t *testing.T) {
 	got := ResolveLayoutKey(WorkspaceLayoutParams{
 		IssueID:               "child",
@@ -317,30 +357,30 @@ func TestResolveLayoutKeyInheritsParentWithoutTB(t *testing.T) {
 }
 
 func TestResolveLayoutKeyKeepsDistinctTBChild(t *testing.T) {
-	got := ResolveLayoutKey(WorkspaceLayoutParams{
+	got := ResolveLayoutKey(withSRMIdents(WorkspaceLayoutParams{
 		IssueID:               "child",
 		IssueIdentifier:       "LHWU-300",
 		IssueParentID:         "parent",
 		IssueParentIdentifier: "LHWU-252",
-	})
+	}))
 	if got.IssueID != "child" || got.IssueIdentifier != "LHWU-300" {
 		t.Fatalf("got %+v, want child/LHWU-300", got)
 	}
 }
 
 func TestResolveLayoutKeyChildTBOwnsWhenParentHasNone(t *testing.T) {
-	got := ResolveLayoutKey(WorkspaceLayoutParams{
+	got := ResolveLayoutKey(withSRMIdents(WorkspaceLayoutParams{
 		IssueID:               "child",
 		IssueIdentifier:       "LHWU-252",
 		IssueParentID:         "parent",
 		IssueParentIdentifier: "VEGA-5",
-	})
+	}))
 	if got.IssueID != "child" || got.IssueIdentifier != "LHWU-252" {
 		t.Fatalf("got %+v, want child/LHWU-252", got)
 	}
 }
 
-func TestResolveLayoutKeyPrefersLayoutOwner(t *testing.T) {
+func TestResolveLayoutKeyIgnoresServerLayoutOwner(t *testing.T) {
 	got := ResolveLayoutKey(WorkspaceLayoutParams{
 		IssueID:               "child",
 		IssueIdentifier:       "VEGA-7",
@@ -349,8 +389,38 @@ func TestResolveLayoutKeyPrefersLayoutOwner(t *testing.T) {
 		LayoutOwnerID:         "root",
 		LayoutOwnerIdentifier: "LHWU-252",
 	})
-	if got.IssueID != "root" || got.IssueIdentifier != "LHWU-252" {
-		t.Fatalf("got %+v, want root/LHWU-252", got)
+	if got.IssueID != "mid" || got.IssueIdentifier != "VEGA-6" {
+		t.Fatalf("got %+v, want one-hop inherit; LayoutOwner must not win", got)
+	}
+}
+
+func TestResolveLayoutKeyWalksAncestors(t *testing.T) {
+	got := ResolveLayoutKey(WorkspaceLayoutParams{
+		IssueID:         "vega-7",
+		IssueIdentifier: "VEGA-7",
+		LayoutOwnerID:   "wrong",
+		LayoutAncestors: []LayoutAncestor{
+			{IssueID: "vega-7", IssueIdentifier: "VEGA-7", ParentID: "vega-6", ParentIdentifier: "VEGA-6"},
+			{IssueID: "vega-6", IssueIdentifier: "VEGA-6", ParentID: "vega-5", ParentIdentifier: "VEGA-5"},
+			{IssueID: "vega-5", IssueIdentifier: "VEGA-5"},
+		},
+	})
+	if got.IssueID != "vega-5" || got.IssueIdentifier != "VEGA-5" {
+		t.Fatalf("got %+v, want vega-5/VEGA-5", got)
+	}
+}
+
+func TestResolveLayoutKeyAncestorsHonorPrefixes(t *testing.T) {
+	got := ResolveLayoutKey(withSRMIdents(WorkspaceLayoutParams{
+		IssueID:         "child",
+		IssueIdentifier: "LHWU-300",
+		LayoutAncestors: []LayoutAncestor{
+			{IssueID: "child", IssueIdentifier: "LHWU-300", ParentID: "parent", ParentIdentifier: "LHWU-252"},
+			{IssueID: "parent", IssueIdentifier: "LHWU-252"},
+		},
+	}))
+	if got.IssueID != "child" || got.IssueIdentifier != "LHWU-300" {
+		t.Fatalf("got %+v, want child/LHWU-300", got)
 	}
 }
 
@@ -376,7 +446,7 @@ func TestWalkLayoutOwnerStopsOnDistinctTB(t *testing.T) {
 		"child":  {ident: "LHWU-300", parentID: "parent", parentIdent: "LHWU-252"},
 		"parent": {ident: "LHWU-252"},
 	}
-	got := WalkLayoutOwner("child", "LHWU-300", func(id string) (ident, parentID, parentIdent string, ok bool) {
+	got := WalkLayoutOwnerWithIdentPrefixes("child", "LHWU-300", []string{"LHWU"}, func(id string) (ident, parentID, parentIdent string, ok bool) {
 		n, ok := tree[id]
 		return n.ident, n.parentID, n.parentIdent, ok
 	})
@@ -408,11 +478,11 @@ func TestIssueLayoutWorkDirInheritsParent(t *testing.T) {
 }
 
 func TestLayoutBranchNameInheritsParentTB(t *testing.T) {
-	got := layoutBranchName(WorkspaceLayoutParams{
+	got := layoutBranchName(withSRMIdents(WorkspaceLayoutParams{
 		IssueIdentifier:       "VEGA-6",
 		IssueParentID:         "parent",
 		IssueParentIdentifier: "LHWU-252",
-	})
+	}))
 	if got != "feature-LHWU-252" {
 		t.Fatalf("layoutBranchName = %q, want feature-LHWU-252", got)
 	}

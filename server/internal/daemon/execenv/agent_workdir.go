@@ -37,9 +37,10 @@ func applyWorkdirAgentConfig(workDir string, ctx *TaskContextForEnv) {
 		return
 	}
 	var (
-		advertise bool
-		briefRel  string
-		briefRoot string
+		advertise   bool
+		advertiseOn string
+		briefRel    string
+		briefRoot   string
 	)
 	for _, root := range layoutConfigRoots(workDir) {
 		cfg, err := loadWorkspaceLayoutFile(root)
@@ -49,10 +50,16 @@ func applyWorkdirAgentConfig(workDir string, ctx *TaskContextForEnv) {
 		if cfg.Agent.AdvertiseWorkdirSkills {
 			advertise = true
 		}
+		if on := strings.TrimSpace(cfg.Agent.AdvertiseOn); on != "" {
+			advertiseOn = on
+		}
 		if rel := strings.TrimSpace(cfg.Agent.Brief); rel != "" {
 			briefRel = rel
 			briefRoot = root
 		}
+	}
+	if !shouldApplyWorkdirAgentBrief(advertiseOn, workDir) {
+		return
 	}
 	if advertise {
 		ctx.WorkdirSkillNames = listWorkdirSkillNames(workDir)
@@ -64,6 +71,40 @@ func applyWorkdirAgentConfig(workDir string, ctx *TaskContextForEnv) {
 			ctx.ProjectBrief = body
 		}
 	}
+}
+
+const (
+	advertiseOnAlways       = "always"
+	advertiseOnDestWorktree = "dest_worktree"
+)
+
+func normalizeAdvertiseOn(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case advertiseOnAlways:
+		return advertiseOnAlways
+	default:
+		return advertiseOnDestWorktree
+	}
+}
+
+func shouldApplyWorkdirAgentBrief(advertiseOn, workDir string) bool {
+	if normalizeAdvertiseOn(advertiseOn) == advertiseOnAlways {
+		return true
+	}
+	return isDestWorktree(workDir)
+}
+
+func isDestWorktree(workDir string) bool {
+	common := gitCommonRoot(workDir)
+	if common == "" {
+		return false
+	}
+	a, err1 := filepath.Abs(workDir)
+	b, err2 := filepath.Abs(common)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return filepath.Clean(a) != filepath.Clean(b)
 }
 
 func layoutConfigRoots(workDir string) []string {

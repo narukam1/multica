@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -153,11 +154,13 @@ type Task struct {
 	ParentIssueIdentifier string `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
 	// IssueParent* are the claimed issue's own parent_issue_id. They are not
 	// the quick-create "file the new issue under" fields above. workspace_layout
-	// uses them to inherit dest/branch when this step has no distinct TB key.
+	// uses them as the one-hop inherit when LayoutAncestors is empty.
 	IssueParentID         string `json:"issue_parent_id,omitempty"`
 	IssueParentIdentifier string `json:"issue_parent_identifier,omitempty"`
-	// LayoutOwner* are the resolved composite-tree owner after walking parents.
-	// When present they win over a one-hop IssueParent inherit.
+	// LayoutAncestors is the parent chain from claim. Dest ownership is
+	// computed here with yaml ident prefixes; LayoutOwner* is ignored.
+	LayoutAncestors []execenv.LayoutAncestor `json:"layout_ancestors,omitempty"`
+	// LayoutOwner* is claim-compat for older daemons. This daemon ignores it.
 	LayoutOwnerID         string `json:"layout_owner_id,omitempty"`
 	LayoutOwnerIdentifier string `json:"layout_owner_identifier,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription describe the human

@@ -87,6 +87,7 @@ version: 1
 kind: composite_workspace
 agent:
   advertise_workdir_skills: true
+  advertise_on: always
   brief: .index/multica-brief.md
   finalize_commit: leave
 always:
@@ -166,6 +167,46 @@ always:
 	}
 	if ctx.ProjectBrief != "from reference" {
 		t.Fatalf("ProjectBrief = %q", ctx.ProjectBrief)
+	}
+}
+
+func TestApplyWorkdirAgentConfigSkipsInPlaceReference(t *testing.T) {
+	main := t.TempDir()
+	initGitRepo(t, main, map[string]string{"README.md": "x\n"})
+	if err := os.MkdirAll(filepath.Join(main, ".index"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := []byte(`
+version: 1
+agent:
+  advertise_workdir_skills: true
+  advertise_on: dest_worktree
+  brief: .index/multica-brief.md
+always:
+  - path: "."
+    isolation: git_worktree
+`)
+	if err := os.WriteFile(filepath.Join(main, ".index", "workspace-layout.yaml"), yaml, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(main, ".index", "multica-brief.md"), []byte("from reference\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	skillDir := filepath.Join(main, ".cursor", "skills", "tb-commit")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: tb-commit\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var ctx TaskContextForEnv
+	applyWorkdirAgentConfig(main, &ctx)
+	if len(ctx.WorkdirSkillNames) != 0 {
+		t.Fatalf("in_place reference must not advertise skills: %#v", ctx.WorkdirSkillNames)
+	}
+	if ctx.ProjectBrief != "" {
+		t.Fatalf("in_place reference must not load implement brief: %q", ctx.ProjectBrief)
 	}
 }
 

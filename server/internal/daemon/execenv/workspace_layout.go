@@ -31,23 +31,59 @@ type WorkspaceLayoutParams struct {
 	IssueTitle       string
 	IssueDescription string
 	// IssueParentID / IssueParentIdentifier are the issue row's parent
-	// (not quick-create "file under"). Used to inherit dest/branch when
-	// this step issue has no distinct TB identifier of its own.
+	// (not quick-create "file under"). One-hop inherit when no ancestor
+	// list is present.
 	IssueParentID         string
 	IssueParentIdentifier string
-	// LayoutOwnerID / LayoutOwnerIdentifier are the resolved tree owner
-	// (walked on the server). When set they win over one-hop parent inherit.
+	// LayoutAncestors is the claimed issue's parent chain (facts only).
+	// The daemon applies yaml ident prefixes; the server does not pick dest.
+	LayoutAncestors []LayoutAncestor
+	// LayoutOwnerID / LayoutOwnerIdentifier are claim-compat fields from
+	// older servers. Dest resolution ignores them.
 	LayoutOwnerID         string
 	LayoutOwnerIdentifier string
-	// RelevantRepos are backend/<name> / frontend/<name> paths this task
-	// should materialise when the layout file says include: task_relevant_only.
+	// RelevantRepos are on_demand paths this task should materialise when
+	// the layout file says include: task_relevant_only. Prefixes come from
+	// yaml on_demand.git_worktree.path_prefixes, not from Multica.
 	RelevantRepos []string
+	// ImplementPrefixes / ProductPrefixes come from yaml ident.*. Empty
+	// means "no tree-owning ident": children inherit dest/branch.
+	ImplementPrefixes []string
+	ProductPrefixes   []string
 }
 
 // LayoutKey is the dest/branch/lock identity for a workspace_layout tree.
 type LayoutKey struct {
 	IssueID         string
 	IssueIdentifier string
+}
+
+// LayoutAncestor is one hop of the claimed issue's parent chain. The
+// server lists identities; dest ownership is decided on the daemon.
+type LayoutAncestor struct {
+	IssueID          string `json:"issue_id,omitempty"`
+	IssueIdentifier  string `json:"issue_identifier,omitempty"`
+	ParentID         string `json:"parent_id,omitempty"`
+	ParentIdentifier string `json:"parent_identifier,omitempty"`
+}
+
+// LookupLayoutAncestors returns a WalkLayoutOwner lookup over a claim chain.
+func LookupLayoutAncestors(ancestors []LayoutAncestor) func(id string) (ident, parentID, parentIdent string, ok bool) {
+	byID := map[string]LayoutAncestor{}
+	for _, a := range ancestors {
+		id := strings.TrimSpace(a.IssueID)
+		if id == "" {
+			continue
+		}
+		byID[id] = a
+	}
+	return func(id string) (ident, parentID, parentIdent string, ok bool) {
+		a, ok := byID[strings.TrimSpace(id)]
+		if !ok {
+			return "", "", "", false
+		}
+		return a.IssueIdentifier, a.ParentID, a.ParentIdentifier, true
+	}
 }
 
 // WorkspaceLayout is the prepared composite tree. Finalize leaves the tree
@@ -78,10 +114,15 @@ type workspaceLayoutFile struct {
 		Source    string `yaml:"source"`
 		Role      string `yaml:"role"`
 	} `yaml:"always"`
+	Ident struct {
+		ImplementPrefixes []string `yaml:"implement_prefixes"`
+		ProductPrefixes   []string `yaml:"product_prefixes"`
+	} `yaml:"ident"`
 	OnDemand struct {
 		GitWorktree struct {
-			Catalog              string `yaml:"catalog"`
-			Include              string `yaml:"include"`
+			Catalog              string   `yaml:"catalog"`
+			Include              string   `yaml:"include"`
+			PathPrefixes         []string `yaml:"path_prefixes"`
 			NestedMustWithParent []struct {
 				Parent string `yaml:"parent"`
 				Child  string `yaml:"child"`
@@ -104,6 +145,7 @@ type workspaceLayoutFile struct {
 // skills are never listed here — dest already has them.
 type workspaceLayoutAgent struct {
 	AdvertiseWorkdirSkills bool   `yaml:"advertise_workdir_skills"`
+	AdvertiseOn            string `yaml:"advertise_on"` // dest_worktree | always
 	Brief                  string `yaml:"brief"`
 	FinalizeCommit         string `yaml:"finalize_commit"`
 }
@@ -118,6 +160,7 @@ func PrepareWorkspaceLayout(params WorkspaceLayoutParams, logger *slog.Logger) (
 	if err != nil {
 		return nil, err
 	}
+	params = applyIdentPolicy(params, cfg)
 	destRoot := IssueLayoutWorkDir(params)
 	if destRoot == "" {
 		return nil, fmt.Errorf("workspace_layout: dest root is empty")
@@ -174,30 +217,128 @@ func loadWorkspaceLayoutFile(root string) (workspaceLayoutFile, error) {
 	return cfg, nil
 }
 
-var tbIssueIdent = regexp.MustCompile(`(?i)^(lhwu|eegv|roiu|req)(-[0-9]+)+$`)
+// LayoutPolicy is the project-owned ident and path prefix set from
+// workspace-layout.yaml. Empty slices mean Multica must not guess.
+type LayoutPolicy struct {
+	ImplementPrefixes []string
+	ProductPrefixes   []string
+	PathPrefixes      []string
+}
 
-var layoutRepoPath = regexp.MustCompile(`(?i)\b((?:backend|frontend)/[A-Za-z0-9._-]+)`)
+// LoadLayoutPolicy reads ident.* and on_demand.git_worktree.path_prefixes.
+func LoadLayoutPolicy(root string) (LayoutPolicy, error) {
+	cfg, err := loadWorkspaceLayoutFile(root)
+	if err != nil {
+		return LayoutPolicy{}, err
+	}
+	return layoutPolicyFromFile(cfg), nil
+}
+
+func layoutPolicyFromFile(cfg workspaceLayoutFile) LayoutPolicy {
+	return LayoutPolicy{
+		ImplementPrefixes: sanitizeIdentPrefixes(cfg.Ident.ImplementPrefixes),
+		ProductPrefixes:   sanitizeIdentPrefixes(cfg.Ident.ProductPrefixes),
+		PathPrefixes:      sanitizeIdentPrefixes(cfg.OnDemand.GitWorktree.PathPrefixes),
+	}
+}
+
+func applyIdentPolicy(params WorkspaceLayoutParams, cfg workspaceLayoutFile) WorkspaceLayoutParams {
+	policy := layoutPolicyFromFile(cfg)
+	if len(params.ImplementPrefixes) == 0 {
+		params.ImplementPrefixes = policy.ImplementPrefixes
+	}
+	if len(params.ProductPrefixes) == 0 {
+		params.ProductPrefixes = policy.ProductPrefixes
+	}
+	return params
+}
+
+var identPrefixToken = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]{0,31}$`)
+
+func sanitizeIdentPrefixes(raw []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, p := range raw {
+		p = strings.TrimSpace(p)
+		if !identPrefixToken.MatchString(p) {
+			continue
+		}
+		key := strings.ToLower(p)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+func identPrefixes(params WorkspaceLayoutParams) []string {
+	return sanitizeIdentPrefixes(append(append([]string{}, params.ImplementPrefixes...), params.ProductPrefixes...))
+}
+
+func prefixAlt(prefixes []string) string {
+	parts := sanitizeIdentPrefixes(prefixes)
+	if len(parts) == 0 {
+		return ""
+	}
+	quoted := make([]string, len(parts))
+	for i, p := range parts {
+		quoted[i] = regexp.QuoteMeta(p)
+	}
+	return strings.Join(quoted, "|")
+}
+
+func exactIdentRegexp(prefixes []string) *regexp.Regexp {
+	alt := prefixAlt(prefixes)
+	if alt == "" {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)^(?:` + alt + `)(?:-[0-9]+)+$`)
+}
+
+func identInTextRegexp(prefixes []string) *regexp.Regexp {
+	alt := prefixAlt(prefixes)
+	if alt == "" {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)\b((?:` + alt + `)(?:-[0-9]+)+)\b`)
+}
+
+func repoPathRegexp(pathPrefixes []string) *regexp.Regexp {
+	alt := prefixAlt(pathPrefixes)
+	if alt == "" {
+		return nil
+	}
+	return regexp.MustCompile(`(?i)\b((?:` + alt + `)/[A-Za-z0-9._-]+)`)
+}
 
 // ResolveLayoutKey picks the dest/branch owner for a workspace_layout run.
-// A distinct TB identifier (LHWU/EEGV/ROIU/REQ) on this issue keeps its own
-// tree; otherwise a step child inherits the parent. LayoutOwner*, when set
-// by the server, is already walked and wins.
+// A distinct tree-owning identifier (yaml ident prefixes) on this issue
+// keeps its own tree; otherwise a step child inherits the parent.
+// Empty prefixes inherit. LayoutOwner* is ignored — dest is yaml + parent hops.
 func ResolveLayoutKey(params WorkspaceLayoutParams) LayoutKey {
+	if len(params.LayoutAncestors) > 0 {
+		return WalkLayoutOwnerWithIdentPrefixes(
+			params.IssueID,
+			params.IssueIdentifier,
+			identPrefixes(params),
+			LookupLayoutAncestors(params.LayoutAncestors),
+		)
+	}
+	return resolveLayoutKeyOneHop(params)
+}
+
+func resolveLayoutKeyOneHop(params WorkspaceLayoutParams) LayoutKey {
 	childID := strings.TrimSpace(params.IssueID)
 	childIdent := strings.TrimSpace(params.IssueIdentifier)
-	if ownerID := strings.TrimSpace(params.LayoutOwnerID); ownerID != "" {
-		ident := strings.TrimSpace(params.LayoutOwnerIdentifier)
-		if ident == "" {
-			ident = childIdent
-		}
-		return LayoutKey{IssueID: ownerID, IssueIdentifier: ident}
-	}
 	parentID := strings.TrimSpace(params.IssueParentID)
 	if parentID == "" {
 		return LayoutKey{IssueID: childID, IssueIdentifier: childIdent}
 	}
-	childTB := tbIdentKey(childIdent)
-	parentTB := tbIdentKey(params.IssueParentIdentifier)
+	prefixes := identPrefixes(params)
+	childTB := tbIdentKey(childIdent, prefixes)
+	parentTB := tbIdentKey(params.IssueParentIdentifier, prefixes)
 	if childTB != "" && childTB != parentTB {
 		return LayoutKey{IssueID: childID, IssueIdentifier: childIdent}
 	}
@@ -210,7 +351,13 @@ func ResolveLayoutKey(params WorkspaceLayoutParams) LayoutKey {
 
 // WalkLayoutOwner follows parent hops until ResolveLayoutKey stops inheriting.
 // lookup returns that issue's identifier and its parent id/ident.
+// Without ident prefixes every child inherits (Vega step issues).
 func WalkLayoutOwner(issueID, issueIdent string, lookup func(id string) (ident, parentID, parentIdent string, ok bool)) LayoutKey {
+	return WalkLayoutOwnerWithIdentPrefixes(issueID, issueIdent, nil, lookup)
+}
+
+// WalkLayoutOwnerWithIdentPrefixes is WalkLayoutOwner using project ident prefixes.
+func WalkLayoutOwnerWithIdentPrefixes(issueID, issueIdent string, prefixes []string, lookup func(id string) (ident, parentID, parentIdent string, ok bool)) LayoutKey {
 	currentID := strings.TrimSpace(issueID)
 	currentIdent := strings.TrimSpace(issueIdent)
 	seen := map[string]struct{}{}
@@ -229,11 +376,12 @@ func WalkLayoutOwner(issueID, issueIdent string, lookup func(id string) (ident, 
 		if !ok || strings.TrimSpace(parentID) == "" {
 			return LayoutKey{IssueID: currentID, IssueIdentifier: currentIdent}
 		}
-		key := ResolveLayoutKey(WorkspaceLayoutParams{
+		key := resolveLayoutKeyOneHop(WorkspaceLayoutParams{
 			IssueID:               currentID,
 			IssueIdentifier:       currentIdent,
 			IssueParentID:         parentID,
 			IssueParentIdentifier: parentIdent,
+			ImplementPrefixes:     prefixes,
 		})
 		if key.IssueID == currentID {
 			return key
@@ -251,9 +399,13 @@ func applyLayoutKey(params WorkspaceLayoutParams) WorkspaceLayoutParams {
 	return params
 }
 
-func tbIdentKey(raw string) string {
+func tbIdentKey(raw string, prefixes []string) string {
+	re := exactIdentRegexp(prefixes)
+	if re == nil {
+		return ""
+	}
 	raw = strings.TrimSpace(raw)
-	if !tbIssueIdent.MatchString(raw) {
+	if !re.MatchString(raw) {
 		return ""
 	}
 	return normalizeTBIdent(raw)
@@ -285,15 +437,16 @@ func layoutBranchName(params WorkspaceLayoutParams) string {
 	if raw == "" {
 		return "multica/" + sanitizeName(taskKey(params.TaskID))
 	}
-	if tbIssueIdent.MatchString(raw) {
+	if tbIdentKey(raw, identPrefixes(params)) != "" {
 		return "feature-" + normalizeTBIdent(raw)
 	}
 	return "multica/" + sanitizeName(raw)
 }
 
 // childLayoutBranchName is the on_demand git_worktree branch. yaml
-// branch.child_repos (e.g. feature-{tb_id}) wins when a TB implement id
-// can be resolved; otherwise the root layout branch is reused.
+// branch.child_repos (e.g. feature-{tb_id}) wins when an implement id
+// can be resolved from yaml ident prefixes; otherwise the root layout
+// branch is reused.
 func childLayoutBranchName(params WorkspaceLayoutParams, cfg workspaceLayoutFile) string {
 	rootBranch := layoutBranchName(params)
 	tmpl := strings.TrimSpace(cfg.Branch.ChildRepos)
@@ -311,42 +464,44 @@ func childLayoutBranchName(params WorkspaceLayoutParams, cfg workspaceLayoutFile
 	return out
 }
 
-var implementTBIdentInText = regexp.MustCompile(`(?i)\b((?:lhwu|eegv|roiu)(?:-[0-9]+)+)\b`)
-var productReqIdentInText = regexp.MustCompile(`(?i)\b((?:req)(?:-[0-9]+)+)\b`)
-
-// implementTBIdent is the {tb_id} for child_repos. LHWU/EEGV/ROIU win over
-// REQ so a product-spec mention in the same body does not become the
-// implement branch.
+// implementTBIdent is the {tb_id} for child_repos. Implement prefixes
+// win over product prefixes so a spec mention in the same body does
+// not become the implement branch. Prefixes come from yaml ident.*.
 func implementTBIdent(params WorkspaceLayoutParams) string {
+	idents := layoutIdentCandidates(params)
 	params = applyLayoutKey(params)
-	for _, raw := range []string{params.IssueIdentifier, params.LayoutOwnerIdentifier, params.IssueParentIdentifier} {
-		if k := tbIdentKey(raw); k != "" && !isProductReqIdent(k) {
+	idents = append(idents, params.IssueIdentifier)
+	impl := sanitizeIdentPrefixes(params.ImplementPrefixes)
+	prod := sanitizeIdentPrefixes(params.ProductPrefixes)
+	for _, raw := range idents {
+		if k := tbIdentKey(raw, impl); k != "" {
 			return k
 		}
 	}
-	texts := []string{
-		params.IssueIdentifier,
-		params.LayoutOwnerIdentifier,
-		params.IssueParentIdentifier,
-		params.IssueTitle,
-		params.IssueDescription,
-	}
-	if k := firstIdentInText(implementTBIdentInText, texts...); k != "" {
+	texts := append(append([]string{}, idents...), params.IssueTitle, params.IssueDescription)
+	if k := firstIdentInText(identInTextRegexp(impl), texts...); k != "" {
 		return k
 	}
-	for _, raw := range []string{params.IssueIdentifier, params.LayoutOwnerIdentifier, params.IssueParentIdentifier} {
-		if k := tbIdentKey(raw); k != "" {
+	for _, raw := range idents {
+		if k := tbIdentKey(raw, prod); k != "" {
 			return k
 		}
 	}
-	return firstIdentInText(productReqIdentInText, texts...)
+	return firstIdentInText(identInTextRegexp(prod), texts...)
 }
 
-func isProductReqIdent(raw string) bool {
-	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(raw)), "REQ-")
+func layoutIdentCandidates(params WorkspaceLayoutParams) []string {
+	out := []string{params.IssueIdentifier, params.IssueParentIdentifier, params.LayoutOwnerIdentifier}
+	for _, a := range params.LayoutAncestors {
+		out = append(out, a.IssueIdentifier, a.ParentIdentifier)
+	}
+	return out
 }
 
 func firstIdentInText(re *regexp.Regexp, texts ...string) string {
+	if re == nil {
+		return ""
+	}
 	for _, text := range texts {
 		if m := re.FindStringSubmatch(text); len(m) > 1 {
 			return normalizeTBIdent(m[1])
@@ -364,13 +519,17 @@ func normalizeTBIdent(raw string) string {
 	return strings.Join(parts, "-")
 }
 
-// ParseLayoutRepoPaths extracts backend/<name> and frontend/<name> mentions
-// from issue/project text for task_relevant_only materialisation.
-func ParseLayoutRepoPaths(texts ...string) []string {
+// ParseLayoutRepoPaths extracts <prefix>/<name> mentions from issue text.
+// pathPrefixes come from yaml; empty prefixes return nothing.
+func ParseLayoutRepoPaths(pathPrefixes []string, texts ...string) []string {
+	re := repoPathRegexp(pathPrefixes)
+	if re == nil {
+		return nil
+	}
 	seen := map[string]bool{}
 	var out []string
 	for _, text := range texts {
-		for _, m := range layoutRepoPath.FindAllStringSubmatch(text, -1) {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
 			rel := normalizeRel(m[1])
 			if rel == "." || seen[rel] {
 				continue

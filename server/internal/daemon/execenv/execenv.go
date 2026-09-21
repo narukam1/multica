@@ -160,7 +160,8 @@ type TaskContextForEnv struct {
 	AgentInstructions             string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills                   []SkillContextForEnv
 	// WorkdirSkillNames are project skill directory slugs already on disk
-	// under cwd (from workspace-layout.yaml agent.advertise_workdir_skills).
+	// under cwd when yaml agent.advertise_workdir_skills is on and
+	// advertise_on allows this cwd (dest_worktree or always).
 	// Names only; Multica does not copy or hardcode project skill bodies.
 	WorkdirSkillNames []string
 	// ProjectBrief is optional project-authored run policy loaded from the
