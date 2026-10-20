@@ -7,7 +7,6 @@ export type AgentRuntimeMode = "local" | "cloud";
 
 export type AgentVisibility = "workspace" | "private";
 
-// ---------------------------------------------------------------------------
 // Agent invocation permissions (MUL-3963)
 //
 // `permission_mode` + `invocation_targets` are the AUTHORITATIVE gate for who
@@ -24,7 +23,6 @@ export type AgentVisibility = "workspace" | "private";
 //   - permission_mode "public_to" + workspace target: any workspace member
 //   - permission_mode "public_to" + member target: only the matching user
 //   - team target: reserved, INERT in v1 (never grants)
-// ---------------------------------------------------------------------------
 
 export type AgentPermissionMode = "private" | "public_to";
 
@@ -93,7 +91,6 @@ export interface RuntimeDevice {
 
 export type AgentRuntime = RuntimeDevice;
 
-// ---------------------------------------------------------------------------
 // Custom runtime profiles (MUL-3284)
 //
 // A RuntimeProfile is a workspace-level *definition* of a custom runtime
@@ -101,7 +98,6 @@ export type AgentRuntime = RuntimeDevice;
 // *instance*. An admin authors a profile (display name + base protocol
 // family + the CLI command to launch), and daemons can then register
 // runtimes against it; those instances carry `profile_id` pointing back here.
-// ---------------------------------------------------------------------------
 
 // The fixed allow-list of base protocol families a custom runtime can wrap.
 // These are the only backends the create flow may select; the server rejects
@@ -138,6 +134,12 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
 export type RuntimeProtocolFamily =
   (typeof RUNTIME_PROFILE_PROTOCOL_FAMILIES)[number];
 
+export const RUNTIME_PROFILE_RUNTIME_TYPES = [
+  ...RUNTIME_PROFILE_PROTOCOL_FAMILIES,
+  "omp",
+] as const;
+export type RuntimeProfileType = (typeof RUNTIME_PROFILE_RUNTIME_TYPES)[number];
+
 // Profile visibility mirrors RuntimeVisibility's vocabulary but uses the
 // workspace/private axis the server documents for profiles.
 export type RuntimeProfileVisibility = "workspace" | "private";
@@ -147,6 +149,7 @@ export interface RuntimeProfile {
   workspace_id: string;
   display_name: string;
   protocol_family: RuntimeProtocolFamily;
+  runtime_type?: RuntimeProfileType;
   command_name: string;
   description: string | null;
   fixed_args: string[];
@@ -157,12 +160,14 @@ export interface RuntimeProfile {
   updated_at: string;
 }
 
-// POST body. `protocol_family` is required and immutable after creation.
+// POST body. runtime_type is the immutable compatibility target; the server
+// derives protocol_family. Older clients may still send protocol_family alone.
 // Optional fields are omitted entirely when unset (never sent as null/empty)
 // so the server applies its own defaults.
 export interface CreateRuntimeProfileRequest {
   display_name: string;
-  protocol_family: RuntimeProtocolFamily;
+  protocol_family?: RuntimeProtocolFamily;
+  runtime_type?: RuntimeProfileType;
   command_name: string;
   description?: string;
   fixed_args?: string[];
@@ -207,6 +212,9 @@ export interface AgentActivityBucket {
   // back-end always reports all three.
   completed_count: number;
   cancelled_count: number;
+  // Absent on older servers; do not estimate duration from a task page.
+  duration_ms?: number;
+  duration_count?: number;
 }
 
 // 30-day total run count per agent, drives the Agents-list RUNS column.
@@ -289,6 +297,7 @@ export interface TaskCancellationActor {
 }
 
 export interface AgentTask {
+  wakeup_id?: string;
   id: string;
   agent_id: string;
   runtime_id: string;
@@ -305,6 +314,7 @@ export interface AgentTask {
     | "queued"
     | "dispatched"
     | "waiting_local_directory"
+    | "deferred"
     | "running"
     | "completed"
     | "failed"
@@ -355,6 +365,12 @@ export interface AgentTask {
    * trigger/coalesced union; an explicitly empty array is still authoritative.
    */
   delivered_comment_ids?: string[];
+  /** Exact run-scoped live-input capability negotiated at this task's start. */
+  supplement_capability?: string;
+  /** Ordinary historical comments explicitly bound to this run, in send order. */
+  supplement_comment_ids?: string[];
+  /** Server-side invocation verdict for the current member and this agent. */
+  can_supplement?: boolean;
   /**
    * Canonical short description of what triggered this task — snapshot
    * taken at creation time. For comment-triggered tasks it's the
@@ -710,6 +726,8 @@ export interface StoredAgentDraft {
   member_ids: string[];
   team_ids: string[];
   applied_message_id: string | null;
+  /** Recovery notice acknowledged by manual editing or dismissal. */
+  dismissed_message_id?: string | null;
 }
 
 /** One unfinished agent-creation conversation, as listed by the studio. */

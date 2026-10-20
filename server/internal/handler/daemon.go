@@ -26,11 +26,13 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
+	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -46,9 +48,7 @@ import (
 // state poll interval.
 const claimPollHintMinDelay = time.Second
 
-// ---------------------------------------------------------------------------
 // Daemon workspace ownership helpers
-// ---------------------------------------------------------------------------
 
 // requireDaemonWorkspaceAccess verifies the caller has access to the given workspace.
 // For daemon tokens (mdt_), compares the token's workspace ID directly.
@@ -189,9 +189,7 @@ func (h *Handler) verifyDaemonWorkspaceAccess(r *http.Request, workspaceID strin
 	return true
 }
 
-// ---------------------------------------------------------------------------
 // Daemon Registration & Heartbeat
-// ---------------------------------------------------------------------------
 
 type DaemonRegisterRequest struct {
 	WorkspaceID string `json:"workspace_id"`
@@ -500,7 +498,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// The profile must exist in this workspace and be enabled. Trust
-			// the profile's stored protocol_family over the daemon-sent type so
+			// the profile's stored runtime identity over the daemon-sent type so
 			// the provider used for task routing cannot drift from the profile.
 			prow, profile, err := h.upsertRuntimeWithProfile(
 				r.Context(),
@@ -512,7 +510,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 						DaemonID:    strToText(req.DaemonID),
 						Name:        name,
 						RuntimeMode: "local",
-						Provider:    profile.ProtocolFamily,
+						Provider:    agent.ProfileRuntimeType(profile.RuntimeType, profile.ProtocolFamily),
 						Status:      status,
 						DeviceInfo:  deviceInfo,
 						Metadata:    metadata,
@@ -539,10 +537,11 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"db_error",
 					true,
 				))
-				writeError(w, http.StatusInternalServerError, "failed to register runtime: "+err.Error())
+				slog.Warn("register runtime failed", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to register runtime")
 				return
 			}
-			provider = profile.ProtocolFamily
+			provider = agent.ProfileRuntimeType(profile.RuntimeType, profile.ProtocolFamily)
 			inserted = prow.Inserted
 			registered = db.AgentRuntime{
 				ID:             prow.ID,
@@ -585,7 +584,8 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					"db_error",
 					true,
 				))
-				writeError(w, http.StatusInternalServerError, "failed to register runtime: "+err.Error())
+				slog.Warn("register runtime failed", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to register runtime")
 				return
 			}
 			inserted = row.Inserted
@@ -703,7 +703,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 					DaemonID:    strToText(req.DaemonID),
 					Name:        name,
 					RuntimeMode: "local",
-					Provider:    profile.ProtocolFamily,
+					Provider:    agent.ProfileRuntimeType(profile.RuntimeType, profile.ProtocolFamily),
 					Status:      "offline",
 					DeviceInfo:  strings.TrimSpace(req.DeviceName),
 					Metadata:    metadata,
@@ -1705,6 +1705,10 @@ const claimBatchMaxTasksCap = 32
 // it self-heals via the heartbeat path).
 func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
+	buildDeadline, responseDeadline := batchClaimDeadlines(r.Context(), start)
+	buildCtx, cancelBuild := context.WithDeadline(r.Context(), buildDeadline)
+	defer cancelBuild()
+	r = r.WithContext(buildCtx)
 	var req struct {
 		DaemonID   string   `json:"daemon_id"`
 		RuntimeIDs []string `json:"runtime_ids"`
@@ -1825,12 +1829,16 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 
 	claimed, err := h.TaskService.ClaimTasksForRuntimes(r.Context(), authorized, maxTasks)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to claim tasks: "+err.Error())
+		slog.Warn("claim tasks failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to claim tasks")
 		return
 	}
 
 	out := make([]AgentTaskResponse, 0, len(claimed))
 	for i := range claimed {
+		if r.Context().Err() != nil {
+			break
+		}
 		task := claimed[i]
 		rt, ok := runtimeByID[uuidToString(task.RuntimeID)]
 		if !ok {
@@ -1852,8 +1860,7 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if failure != nil {
 			// Builder rejected this task (workspace isolation / chat-input);
 			// it has already settled the task where the failure requires it.
-			// Skip it — non-settling failures leave the task dispatched for
-			// the reclaim path.
+			// Undelivered claims are recovered below with a separate budget.
 			continue
 		}
 		if !rt.OwnerID.Valid {
@@ -1869,20 +1876,12 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if terr != nil {
 			slog.Error("batch claim: generate task token failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", terr)
-			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
-				slog.Error("batch claim: requeue after token-gen failure failed",
-					"task_id", uuidToString(task.ID), "error", rerr)
-			}
 			continue
 		}
 		remoteMCPToken, daemonTokens, derr := remoteMCPDaemonTokenForClaim(resp, rt)
 		if derr != nil {
 			slog.Error("batch claim: generate Remote MCP daemon token failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", derr)
-			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
-				slog.Error("batch claim: requeue after Remote MCP token failure failed",
-					"task_id", uuidToString(task.ID), "error", rerr)
-			}
 			continue
 		}
 		// Route through the SAME finalization as the per-runtime endpoint so the
@@ -1905,10 +1904,6 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 		if ferr != nil {
 			slog.Error("batch claim: finalize task claim failed; requeueing claim",
 				"task_id", uuidToString(task.ID), "error", ferr)
-			if _, rerr := h.TaskService.RequeueTaskAfterClaimFailure(r.Context(), task); rerr != nil {
-				slog.Error("batch claim: requeue after finalize failure failed",
-					"task_id", uuidToString(task.ID), "error", rerr)
-			}
 			continue
 		}
 		if deliveryFailure != nil {
@@ -1936,8 +1931,9 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 	// poll; a task that crossed fire_at during this request yields a bounded
 	// follow-up hint and is promoted on the next claim. If the lookup fails,
 	// omit the support bit so the daemon conservatively retains its ordinary
-	// PollInterval.
-	if len(out) < maxTasks && requestHasClientCapability(r, protocol.DaemonCapabilityClaimPollHintsV1) {
+	// PollInterval. Omitted claims also retain that short poll in case recovery
+	// failed or the task_available wakeup raced with this response.
+	if len(out) == len(claimed) && len(out) < maxTasks && requestHasClientCapability(r, protocol.DaemonCapabilityClaimPollHintsV1) {
 		nextDeferred, nextErr := h.Queries.NextDeferredTaskFireAtForRuntimes(r.Context(), db.NextDeferredTaskFireAtForRuntimesParams{
 			RuntimeIds:       authorized,
 			RuntimeStaleSecs: service.RuntimeClaimFreshnessSeconds,
@@ -1952,7 +1948,81 @@ func (h *Handler) ClaimTasksByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if len(out) != len(claimed) {
+		// HTTP/1.1 cannot process another request until this handler returns.
+		// Keep the next claim off this connection while recovery is running.
+		w.Header().Set("Connection", "close")
+	}
 	writeMeasuredJSON(w, http.StatusOK, response)
+	if len(out) != len(claimed) {
+		// Deliver successful payloads before batch recovery side effects. Cache
+		// invalidation, event listeners and cross-node wakeups can use their own
+		// timeouts, so the recovery context alone cannot bound the response wait.
+		// HTTP already advertises Content-Length; flushing sends the whole body.
+		// WS keeps cleanup in the existing RPC worker after queuing its response.
+		cleanup := func() {
+			h.requeueUndeliveredBatchClaims(r.Context(), claimed, out, responseDeadline)
+		}
+		if !daemonws.AfterRPCResponse(r.Context(), cleanup) {
+			_ = http.NewResponseController(w).Flush()
+			cleanup()
+		}
+	}
+}
+
+const (
+	batchClaimRecoveryTimeout = time.Second
+	batchClaimResponseMargin  = 250 * time.Millisecond
+)
+
+// Reserve recovery and response time INSIDE the installed HTTP client's budget.
+// The WS response grace is for transport, not additional database work. Shorter
+// caller deadlines get proportionally smaller reserves; longer ones cannot
+// extend the HTTP-compatible batch budget.
+func batchClaimDeadlines(ctx context.Context, start time.Time) (build, response time.Time) {
+	deadline := start.Add(protocol.DaemonBatchClaimRequestTimeout)
+	if caller, ok := ctx.Deadline(); ok && caller.Before(deadline) {
+		deadline = caller
+	}
+	budget := max(deadline.Sub(start), 0)
+	response = deadline.Add(-min(batchClaimResponseMargin, budget/10))
+	build = response.Add(-min(batchClaimRecoveryTimeout, budget/4))
+	return build, response
+}
+
+// Share one deadline for recovery DB work across the batch. Post-commit cache,
+// event and wakeup side effects may outlive it, so callers deliver the response
+// first while retaining cleanup in the current HTTP/RPC request worker.
+func (h *Handler) requeueUndeliveredBatchClaims(ctx context.Context, claimed []db.AgentTaskQueue, delivered []AgentTaskResponse, responseDeadline time.Time) {
+	if len(claimed) == len(delivered) {
+		return
+	}
+	deliveredIDs := make(map[string]bool, len(delivered))
+	for _, task := range delivered {
+		deliveredIDs[task.ID] = true
+	}
+	deadline := time.Now().Add(batchClaimRecoveryTimeout)
+	if responseDeadline.Before(deadline) {
+		deadline = responseDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	defer cancel()
+	for _, task := range claimed {
+		if deliveredIDs[uuidToString(task.ID)] {
+			continue
+		}
+		if ctx.Err() != nil {
+			slog.Warn("batch claim: recovery budget exhausted; stale reclaim will recover remaining claims", "error", ctx.Err())
+			break
+		}
+		// The existing CAS matches runtime + dispatched_at and requires an
+		// unstarted dispatched row. Settled, already requeued, started, and
+		// newer claims must remain untouched (ErrNoRows).
+		if _, err := h.TaskService.RequeueTaskAfterClaimFailure(ctx, task); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Error("batch claim: undelivered claim recovery failed; stale reclaim will recover it",
+				"task_id", uuidToString(task.ID), "error", err)
+		}
+	}
 }
 
 func claimPollHintDelay(now, fireAt time.Time) time.Duration {
@@ -2114,9 +2184,9 @@ type claimBuildFailure struct {
 // The two failures settle differently:
 //
 //   - The read FAILED (transient: DB blip, timeout, reset). Preserve the
-//     just-dispatched task so the stale-dispatched reclaim redelivers it,
-//     exactly as the chat-input load does (MUL-4351). This is the reachable
-//     case and the one worth fixing.
+//     just-dispatched task for redelivery. The batch endpoint requeues
+//     omitted claims within its response budget; the singular endpoint
+//     retains stale-dispatch recovery, as for chat-input reads (MUL-4351).
 //   - The row is GONE (ErrNoRows). Cancel: the task can never run, and
 //     preserving it would spin in the reclaim loop forever. Legacy FKs
 //     currently keep every one of these states from arising —
@@ -2149,10 +2219,9 @@ func (h *Handler) rejectClaimSourceLoad(ctx context.Context, task *db.AgentTaskQ
 	}
 }
 
-// rejectClaimSkillLoad settles a claim whose agent skills could not be read.
-// It mirrors rejectClaimSourceLoad's transient branch — preserve the
-// just-dispatched task so the stale-dispatched reclaim redelivers it — because
-// this is the same kind of failure: a transient read on the claim-build path.
+// rejectClaimSkillLoad preserves a claim whose agent skills could not be read.
+// Like other transient source failures, the batch endpoint requeues it within
+// its response budget; the singular endpoint retains stale-dispatch recovery.
 //
 // Dispatching with whatever loaded is not the safer half-measure it looks
 // like. LoadAgentSkills reads the whole skill set in two queries, so a failure
@@ -2343,6 +2412,19 @@ func claimResponseAgentIdentityMatches(resp AgentTaskResponse) bool {
 func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQueue, runtime db.AgentRuntime, runtimeID, runtimeWorkspaceID string) (resp AgentTaskResponse, deliveredCommentIDs []pgtype.UUID, issueSnapshot []byte, agentSkillCount, builtinSkillCount int, failure *claimBuildFailure) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
+	if err := (&service.IssueWakeupService{Tasks: h.TaskService}).CheckClaim(r.Context(), *task); err != nil {
+		if !errors.Is(err, service.ErrWakeupForbidden) {
+			return resp, nil, nil, 0, 0, h.rejectClaimSourceLoad(r.Context(), task, err, "wakeup", resp.WakeupID)
+		}
+		return resp, nil, nil, 0, 0, h.failClaimedTaskBeforeLaunch(r.Context(), task, "Wakeup is disabled or its authorization is no longer available.", taskfailure.ReasonInvalidTaskIdentity, "wakeup_unavailable", http.StatusConflict, "wakeup unavailable")
+	}
+	// Preserve PostgreSQL's microseconds: second-resolution display timestamps
+	// cannot distinguish stale claims reclaimed within the same second.
+	if task.DispatchedAt.Valid {
+		generation := task.DispatchedAt.Time.UTC().Format(time.RFC3339Nano)
+		resp.DispatchedAt = &generation
+		resp.StartClaimSupported = true
+	}
 	var issueNumber int32
 	var layoutIssue *db.Issue
 	// Claim-only capability: this server resolves the squad-leader role on the
@@ -2588,23 +2670,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
-	// Stored task initiator: chat tasks persist the real message sender at
-	// enqueue time (web: request user; Lark: inbound sender — NOT the chat
-	// session creator, which for Lark groups is the installer). When set, it is
-	// the authoritative initiator for this run; resolve the live name/email so
-	// the daemon can render `## Task Initiator`. Comment-triggered tasks instead
-	// resolve their initiator from the triggering comment's author below; the
-	// two paths are mutually exclusive (a task is either chat or issue-bound).
-	// See MUL-2645.
-	if task.InitiatorUserID.Valid {
-		resp.InitiatorType = "member"
-		resp.InitiatorID = uuidToString(task.InitiatorUserID)
-		if u, err := h.Queries.GetUser(r.Context(), task.InitiatorUserID); err == nil {
-			resp.InitiatorName = u.Name
-			resp.InitiatorEmail = u.Email
-		}
-	}
-
 	// Include workspace ID and repos so the daemon can set up worktrees.
 	// Project context, repo precedence and the tenant/failure rules around both
 	// live in resolveClaimProjectContext, which every claim path shares.
@@ -2765,6 +2830,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		// Project workflow (MUL-7420): best-effort, like the status catalog
+		// below — a failure degrades to the workspace-wide status rules.
+		resp.ProjectWorkflow = h.claimProjectWorkflow(r.Context(), issue, task)
 
 		// Load every planned input as one chronological, de-duplicated set.
 		// The trigger is included here so the delivery receipt can only contain
@@ -2845,22 +2913,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					}
 				}
 				resp.TriggerAuthorType = comment.AuthorType
-				// The triggering comment's author is the task initiator — the
-				// real requester behind this run. Surface it (type + id + name,
-				// plus email for members) so a workspace-visible agent can
-				// attribute the request to the right person instead of to the
-				// runtime owner. Same lookups as the display name above; we just
-				// also capture the id and email. See MUL-2645.
-				resp.InitiatorType = comment.AuthorType
-				if comment.AuthorID.Valid {
-					resp.InitiatorID = uuidToString(comment.AuthorID)
-				}
+				// Preserve the direct trigger actor independently from the human
+				// whose authority this run uses. They can differ on delegated runs
+				// and manual reruns of comment-triggered tasks.
 				switch comment.AuthorType {
 				case "agent":
 					if comment.AuthorID.Valid {
 						if a, err := h.Queries.GetAgent(r.Context(), comment.AuthorID); err == nil {
 							resp.TriggerAuthorName = a.Name
-							resp.InitiatorName = a.Name
 						}
 					}
 				case "member":
@@ -2869,8 +2929,6 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					if comment.AuthorID.Valid {
 						if u, err := h.Queries.GetUser(r.Context(), comment.AuthorID); err == nil {
 							resp.TriggerAuthorName = u.Name
-							resp.InitiatorName = u.Name
-							resp.InitiatorEmail = u.Email
 						}
 					}
 				}
@@ -3174,9 +3232,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			inputLoadErr = err
 		}
 		// A read failure must NOT masquerade as "zero input". Preserve the
-		// just-dispatched task (the stale-dispatched reclaim redelivers it)
-		// and reject the claim with 5xx, rather than cancelling a valid direct
-		// task on a transient DB error (MUL-4351 review).
+		// just-dispatched task for batch recovery (or singular stale reclaim)
+		// and reject its payload, rather than cancelling a valid direct task
+		// on a transient DB error (MUL-4351 review).
 		if inputLoadErr != nil {
 			slog.Error("chat claim: load chat input messages failed; preserving task for redelivery",
 				"task_id", uuidToString(task.ID),
@@ -3668,6 +3726,33 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	// Wakeup rules that waited for this run hand it their inputs now, after
+	// every gate passed, and only for a daemon that renders them; otherwise
+	// they keep their inputs and start their own run.
+	if requestHasClientCapability(r, protocol.DaemonCapabilityJoinedWakeupsV1) {
+		joined, err := (&service.IssueWakeupService{Tasks: h.TaskService}).JoinWaitingWakeups(r.Context(), *task)
+		if err != nil {
+			slog.Warn("daemon claim: waiting wakeups keep their inputs", "task_id", uuidToString(task.ID), "error", err)
+		} else {
+			task.Context = joined
+			resp.WakeupJoined = service.JoinedWakeupNotes(joined)
+		}
+	}
+
+	// Hydrate attribution only after every source/workspace/version gate has
+	// passed so a rejected claim cannot receive another user's profile data.
+	// The existing flat initiator fields carry the run's authorization human to
+	// installed daemons as well as current ones. Direct trigger authors remain
+	// available separately through trigger_author_*.
+	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
+	if resp.Attribution != nil && resp.Attribution.Originator != nil {
+		originator := resp.Attribution.Originator
+		resp.InitiatorType = "member"
+		resp.InitiatorID = originator.ID
+		resp.InitiatorName = originator.Name
+		resp.InitiatorEmail = originator.Email
+	}
+
 	return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount, nil
 }
 
@@ -3834,7 +3919,8 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	claimMs = time.Since(claimStart).Milliseconds()
 	if err != nil {
 		outcome = "error_claim"
-		writeError(w, http.StatusInternalServerError, "failed to claim task: "+err.Error())
+		slog.Warn("claim task failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to claim task")
 		return
 	}
 
@@ -4120,13 +4206,10 @@ func (h *Handler) ListPendingTasksByRuntime(w http.ResponseWriter, r *http.Reque
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
-
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ---------------------------------------------------------------------------
 // Task Lifecycle (called by daemon)
-// ---------------------------------------------------------------------------
 
 // ExtendTaskPrepareLease keeps a dispatched task protected while the daemon is
 // resolving startup inputs and preparing the execution environment.
@@ -4167,15 +4250,68 @@ func (h *Handler) StartTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, err := h.TaskService.StartTask(r.Context(), parseUUID(taskID))
+	var req struct {
+		Capabilities []string `json:"capabilities"`
+		RuntimeID    string   `json:"runtime_id"`
+		DispatchedAt string   `json:"dispatched_at"`
+	}
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+	}
+	enableTaskSupplement := slices.Contains(req.Capabilities, protocol.DaemonCapabilityTaskSupplementV1)
+	var task *db.AgentTaskQueue
+	var err error
+	legacy := req.RuntimeID == "" && req.DispatchedAt == ""
+	if legacy {
+		// Older daemons send {}. Keep their single-winner behavior; in
+		// particular, they cannot acknowledge an already-running task.
+		task, err = h.TaskService.StartTask(r.Context(), parseUUID(taskID), enableTaskSupplement)
+	} else {
+		runtimeID, ok := parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
+		if !ok {
+			return
+		}
+		generation, parseErr := time.Parse(time.RFC3339Nano, req.DispatchedAt)
+		if parseErr != nil || generation.Nanosecond()%1000 != 0 {
+			writeError(w, http.StatusBadRequest, "dispatched_at must be a PostgreSQL claim timestamp")
+			return
+		}
+		task, err = h.TaskService.StartTaskForClaim(r.Context(), db.LockAgentTaskStartClaimParams{
+			ID: parseUUID(taskID), RuntimeID: runtimeID,
+			DispatchedAt: pgtype.Timestamptz{Time: generation, Valid: true},
+		}, enableTaskSupplement)
+	}
 	if err != nil {
 		slog.Warn("start task failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusBadRequest, err.Error())
+		if errors.Is(err, pgx.ErrNoRows) {
+			status := http.StatusConflict
+			if legacy {
+				status = http.StatusBadRequest
+			}
+			writeError(w, status, "task claim is stale or task is no longer startable")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to start task")
+		}
 		return
 	}
 
 	slog.Info("task started", "task_id", taskID, "agent_id", uuidToString(task.AgentID))
-	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
+	resp := taskToResponse(*task, workspaceID)
+	// Echo the capability the server actually committed for this exact run.
+	// A daemon must use this response rather than its own offer: an old server
+	// ignores the offer and omits the field, which keeps daemon-first rollouts
+	// fail closed without requiring synchronized deployment.
+	if task.IssueID.Valid {
+		if capability, capabilityErr := h.Queries.GetTaskSupplementCapability(r.Context(), task.ID); capabilityErr == nil {
+			resp.SupplementCapability = capability.Capability
+		} else if !errors.Is(capabilityErr, pgx.ErrNoRows) {
+			slog.Warn("start task: failed to load negotiated supplement capability", "task_id", taskID, "error", capabilityErr)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // TaskWaitLocalDirectoryRequest is the body the daemon POSTs when it parks
@@ -4371,7 +4507,7 @@ func (h *Handler) CompleteTask(w http.ResponseWriter, r *http.Request) {
 		// 5xx so the daemon retries the terminal callback and the completion —
 		// including the single chat outcome row — lands exactly once (MUL-4351).
 		slog.Warn("complete task failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to complete task")
 		return
 	}
 	if !transitioned {
@@ -4448,46 +4584,18 @@ func (h *Handler) emitIssueExecutedOnFirstCompletion(r *http.Request, task *db.A
 	))
 }
 
-// reconcileCommentsOnCompletion closes the at-least-once gap for member
-// comments a completing run did NOT deliver (MUL-4195).
+// reconcileCommentsOnCompletion replays qualifying comments absent from this
+// run's delivered_comment_ids receipt. Planned/coalesced IDs do not prove the
+// provider received them, particularly with older daemons or deleted comments.
 //
-// The merge path (mergeCommentIntoPendingTask) folds a comment into a task only
-// while it is still PRE-CLAIM (queued/deferred). Those planned ids are not
-// proof of delivery: older daemons ignore structured coalesced fields, and a
-// referenced comment can be deleted before claim. Claim therefore records the
-// ids it actually embedded in delivered_comment_ids. Anything posted during
-// this run's lifetime that is NOT in that receipt must earn a follow-up.
+// Anchor at task creation and exclude the delivered set. A dispatch timestamp
+// would miss a comment whose pre-claim merge lost a race to claiming the task.
+// Replay chronologically through normal enqueue so comments coalesce into one
+// follow-up. That follow-up's later creation time and own receipt bound repetition.
 //
-// Anchor = created_at + delivered-set exclusion, NOT a dispatch/start timestamp
-// (MUL-4195 review round-3 must-fix). A timestamp anchor cannot tell a
-// delivered comment from an undelivered one, and there is a race it structurally
-// misses: a comment created while the task was still queued, but whose merge
-// lost the race to the daemon claiming the task (queued→dispatched) — the merge
-// then finds no pre-claim row (ErrNoRows), the enqueue path defers to reconcile,
-// yet the comment's created_at is BEFORE dispatched_at, so a dispatched_at
-// anchor would skip it and it would vanish. Anchoring on the task's own
-// created_at reaches back over the whole run, and excluding the delivered set
-// is what prevents re-firing comments the run actually received. Together
-// they catch the pre-dispatch merge-race comment, the
-// dispatch→start comment, and the during-run comment, while never double-firing
-// a delivered one.
-//
-// Scope + loop safety:
-//   - MEMBER comments keep their full routing. AGENT comments qualify through
-//     explicit mentions, or the worker-to-assigned-leader route when the input
-//     was already accepted and recorded in this run's plan. Timestamp-only
-//     implicit agent replies are excluded: completion must not invent a new
-//     conversation. Current invocation permissions and self-trigger guards
-//     still apply to every replay.
-//   - Only comments routing to THE AGENT THAT JUST RAN earn a follow-up here;
-//     an `@other-agent` comment is left to that agent's own creation-time
-//     trigger, so a completion never re-wakes an unrelated agent.
-//   - Every undelivered qualifying comment is replayed through the normal
-//     enqueue path in chronological order, so they coalesce into a SINGLE
-//     follow-up task (the first enqueues it, the rest merge in). Bounded to one
-//     run, and terminating: the follow-up's own created_at is later than all of
-//     these comments and its delivered set will contain them, so its completion
-//     finds nothing to re-schedule.
+// Preserve member routing and accepted explicit agent routes, current invocation
+// permissions, and self-trigger guards. Do not invent implicit agent conversation
+// routes or wake an unrelated agent from another agent's completion.
 func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.AgentTaskQueue) {
 	if task == nil || !task.IssueID.Valid || !task.AgentID.Valid || !task.CreatedAt.Valid {
 		return
@@ -4501,6 +4609,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		IssueID:           task.IssueID,
 		Since:             task.CreatedAt,
 		PlannedCommentIds: plannedCommentIDs,
+		AgentID:           task.AgentID,
 	})
 	if err != nil {
 		slog.Warn("reconcile comments on completion: list comments failed",
@@ -4583,6 +4692,7 @@ func (h *Handler) reconcileCommentsOnCompletion(ctx context.Context, task *db.Ag
 		}
 		triggers, _ := h.computeCommentAgentTriggers(ctx, issue, c.Content, parentComment, actorType, actorID, commentTriggerComputeOptions{
 			ExcludeTriggerCommentID: c.ID,
+			AuthoringTaskID:         c.SourceTaskID,
 			OriginatorUserID:        originatorUserID,
 		})
 		// Agent replies discovered only by timestamp must not start a new
@@ -4650,7 +4760,7 @@ func keepReplayableAgentTriggers(triggers []commentAgentTrigger, planned bool) [
 		switch trigger.Source {
 		case commentTriggerSourceMentionAgent, commentTriggerSourceMentionSquadLeader:
 			filtered = append(filtered, trigger)
-		case commentTriggerSourceIssueAssignee:
+		case commentTriggerSourceIssueAssignee, commentTriggerSourceThreadParent:
 			if planned && trigger.NonLeaderAgentReply {
 				filtered = append(filtered, trigger)
 			}
@@ -5075,7 +5185,7 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 		// isTransientError) — retries and the fail, gap flag, and retry land
 		// exactly once (MUL-5305). An invalid request body still returns 400 above.
 		slog.Warn("fail task failed", "task_id", taskID, "error", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, http.StatusInternalServerError, "failed to fail task")
 		return
 	}
 	if !transitioned {
@@ -5095,11 +5205,11 @@ func (h *Handler) failTask(w http.ResponseWriter, r *http.Request, taskID, works
 	writeJSON(w, http.StatusOK, taskToResponse(*task, workspaceID))
 }
 
-// ---------------------------------------------------------------------------
 // Task Messages (live agent output)
-// ---------------------------------------------------------------------------
 
 type TaskMessageRequest struct {
+	// CallID is an opaque tool-call identity scoped to one backend execution.
+	CallID  string         `json:"call_id,omitempty"`
 	Seq     int            `json:"seq"`
 	Type    string         `json:"type"`
 	Tool    string         `json:"tool,omitempty"`
@@ -5167,6 +5277,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		Seqs:     make([]int32, 0, n),
 		Types:    make([]string, 0, n),
 		Tools:    make([]string, 0, n),
+		CallIds:  make([]string, 0, n),
 		Contents: make([]string, 0, n),
 		Inputs:   make([]string, 0, n),
 		Outputs:  make([]string, 0, n),
@@ -5203,6 +5314,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		// than a single row, which is inherent to one-statement writes.
 		msg.Type = util.SanitizeTextForPostgres(msg.Type)
 		msg.Tool = util.SanitizeTextForPostgres(msg.Tool)
+		msg.CallID = util.SanitizeTextForPostgres(msg.CallID)
 		msg.Content = util.SanitizeTextForPostgres(msg.Content)
 		msg.Output = util.SanitizeTextForPostgres(msg.Output)
 		if msg.Input != nil {
@@ -5230,6 +5342,7 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		params.Seqs = append(params.Seqs, int32(msg.Seq))
 		params.Types = append(params.Types, msg.Type)
 		params.Tools = append(params.Tools, msg.Tool)
+		params.CallIds = append(params.CallIds, msg.CallID)
 		params.Contents = append(params.Contents, msg.Content)
 		params.Inputs = append(params.Inputs, inputJSON)
 		params.Outputs = append(params.Outputs, msg.Output)
@@ -5379,6 +5492,7 @@ func taskMessageToPayload(m db.TaskMessage, taskID, issueID string) protocol.Tas
 		Seq:             int(m.Seq),
 		Type:            m.Type,
 		Tool:            m.Tool.String,
+		CallID:          m.CallID.String,
 		Content:         m.Content.String,
 		Input:           input,
 		Output:          m.Output.String,
@@ -5694,6 +5808,7 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	for i, t := range tasks {
 		resp[i] = taskToResponse(t, workspaceID)
 	}
+	h.hydrateTaskSupplementMetadata(r.Context(), r, issue.WorkspaceID, tasks, resp)
 	// Execution-log rows render the "on behalf of <member>" badge, so this
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
 	// one batch) — otherwise the badge falls back to "someone" on issue detail.
